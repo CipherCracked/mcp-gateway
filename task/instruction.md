@@ -27,12 +27,11 @@ The gateway communicates with upstream MCP servers via **stdio transport** (subp
 ├── task/
 │   ├── instruction.md          # This file — the task specification
 │   └── public/
-│       └── gateway.yaml.example  # Example config (verifier uses its own fixtures)
-├── mcp_gateway/                # You create this package (empty starter)
+│       └── gateway.yaml.example  # Example config (reference only)
 └── ...
 ```
 
-You are working in `/workspace/`. The `mcp_gateway/` package does not exist yet — you must create it from scratch.
+You are working in `/workspace/`. No source code exists yet — you must create the gateway package from scratch.
 
 ---
 
@@ -54,27 +53,19 @@ You must implement the gateway core, the two fixture MCP servers, configuration 
 
 - **Language**: Python 3.11+
 - **Framework**: FastAPI for the REST API, uvicorn as ASGI server
-- **MCP SDK**: `mcp` package (v2) for upstream client-server communication via stdio
+- **MCP SDK**: `mcp` package for upstream client-server communication via stdio
 - **Persistence**: `aiosqlite` for async SQLite access
 - **Config**: PyYAML for reading `/app/config/gateway.yaml`
 - **No external services**: No Redis, no PostgreSQL, no OAuth server, no internet access. Everything runs in a single Docker container.
 - **Single process**: The gateway runs as one process; concurrency is handled via asyncio (Tasks, Semaphores, `wait_for`).
 - **Implement from scratch**: Do not copy an existing MCP gateway implementation. Write the gateway logic yourself.
-- **Do not modify fixture control ports**: The fixture servers expose test-only HTTP control endpoints for the verifier; you must not use them in your gateway implementation.
+- **Do not use fixture control ports**: The fixture servers expose test-only HTTP control endpoints; your gateway must not depend on or call them.
 
 ---
 
 ## Required Endpoints
 
 All endpoints require the `X-API-Key` header unless otherwise noted.
-
-### Authentication
-
-| Header | Description |
-|--------|-------------|
-| `X-API-Key` | Client API key from config |
-
----
 
 ### Tool Discovery
 
@@ -119,6 +110,7 @@ Submit a tool call for async execution.
 - The gateway routes to the correct upstream server based on the resolved server name.
 
 **Error Responses**:
+
 | Code | HTTP | Scenario |
 |------|------|----------|
 | `AUTH_MISSING` | 401 | No `X-API-Key` header |
@@ -207,7 +199,7 @@ pending → running → completed
 
 ---
 
-## Two Failure Modes (Critical)
+## Two Failure Modes
 
 | Failure Mode | When | HTTP Response |
 |--------------|------|---------------|
@@ -216,7 +208,7 @@ pending → running → completed
 
 ---
 
-## Error Sanitization (Security Requirement)
+## Error Sanitization
 
 **Never expose in client responses**:
 - Stack traces
@@ -260,7 +252,9 @@ Upstream exceptions are caught, logged internally (full detail), and returned sa
 
 ---
 
-## Permission Enforcement Matrix
+## Permission Enforcement
+
+Authorization is checked at **every** protected operation, not just at discovery time.
 
 | Operation | Auth Required? | Permission Checked? |
 |-----------|----------------|---------------------|
@@ -270,7 +264,7 @@ Upstream exceptions are caught, logged internally (full detail), and returned sa
 | `POST /executions/{id}/cancel` | **Yes** | Yes (owner + tool currently permitted) |
 | `GET /executions/{id}/result` | **Yes** | Yes (owner + tool currently permitted) |
 
-Authorization is checked at **every** protected operation, not just at discovery time. A client that was permitted when it submitted an execution may lose access to the result if its permission is revoked before it polls.
+A client that was permitted when it submitted an execution may lose access to the result if its permission is revoked before it polls.
 
 ---
 
@@ -300,7 +294,7 @@ Authorization is checked at **every** protected operation, not just at discovery
 
 **Rate Limiting**: Token bucket per client.
 - Capacity = `rate_limit_per_minute`
-- Refill rate = `rate_limit_per_minute / 60` per second (continuous)
+- Refill rate = `rate_limit_per_minute / 60` tokens per second (continuous)
 - In-memory state (resets on restart — acceptable)
 
 **Concurrency**: Asyncio Semaphore per client_id.
@@ -322,55 +316,29 @@ Authorization is checked at **every** protected operation, not just at discovery
 
 ## Upstream MCP Servers (Fixtures)
 
-**Fixture Architecture**: The gateway launches MCP servers as child subprocesses via stdio. All components run in a single Docker container. The verifier runs in the same container and accesses fixture test-control endpoints directly on loopback (bypassing the gateway).
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Single Docker Container                       │
-│  ┌──────────────────┐    stdin/stdout    ┌──────────────────┐  │
-│  │    Gateway       │ ─────────────────► │  Documents MCP   │  │
-│  │  (FastAPI)       │  MCP protocol      │  (stdio child)   │  │
-│  │                  │                    │  control: 9001   │  │
-│  └──────────────────┘                    └──────────────────┘  │
-│         │                                        │              │
-│         │ stdin/stdout                           │              │
-│         ▼                                        ▼              │
-│  ┌──────────────────┐                    ┌──────────────────┐  │
-│  │    Verifier      │  HTTP (control)    │  Jobs MCP        │  │
-│  │  (pytest)        │  ───────────────►  │  (stdio child)   │  │
-│  │                  │                    │  control: 9002   │  │
-│  └──────────────────┘                    └──────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-The gateway spawns two upstream servers as subprocesses via stdio. Each fixture server also exposes a separate HTTP control port for verifier test controls — these are **not accessible via the gateway API** and are used only by the verifier.
+The gateway launches MCP servers as child subprocesses via stdio. All components run in a single Docker container.
 
 ### Documents Server (`python -m mcp_gateway.servers.documents`)
 - **MCP Transport**: stdio (spawned by gateway)
-- **Control Port**: `localhost:9001` (HTTP, verifier-only — not part of gateway API)
+- **Control Port**: `localhost:9001` (test-only — not part of the gateway API)
 - Tools:
   - `search_documents(query: string, limit?: integer) → {documents: [{id, title, snippet}]}`
   - `get_document(id: string) → {id, title, content}`
 
 ### Jobs Server (`python -m mcp_gateway.servers.jobs`)
 - **MCP Transport**: stdio (spawned by gateway)
-- **Control Port**: `localhost:9002` (HTTP, verifier-only — not part of gateway API)
+- **Control Port**: `localhost:9002` (test-only — not part of the gateway API)
 - Tools:
   - `execute_job(payload: object, priority?: "low"|"normal"|"high") → {job_id: string}`
   - `get_job_status(job_id: string) → {job_id, state, result?, error?}`
 
-**Test-only control endpoints** (verifier calls directly on control port, NOT via gateway):
-- `POST /_test/fail_next` — queues a failure for the next tool call (`mode: "exception"` or `"mcp_error"`)
-- `POST /_test/delay` — queues a delay for the next tool call (`{"seconds": N}`)
-- `POST /_test/crash` (Jobs only) — terminates the fixture process immediately
-
-These are used by verifier tests only. Your gateway must not depend on or call these endpoints.
+Test-only control endpoints (`/_test/fail_next`, `/_test/delay`, `/_test/crash`) exist for external test harnesses. Your gateway must not depend on or call these endpoints.
 
 ---
 
 ## Configuration File
 
-**Path**: `/app/config/gateway.yaml` (read by the gateway at runtime; the verifier uses its own test fixtures and does not trust this file for assertions).
+**Path**: `/app/config/gateway.yaml` — read by the gateway at runtime.
 
 ```yaml
 gateway:
@@ -402,18 +370,6 @@ clients:
 
 ---
 
-## Tech Stack Requirements
-
-- **Python 3.11+**
-- **FastAPI** for REST API
-- **MCP Python SDK v2** (`mcp` package) for upstream client
-- **aiosqlite** for async SQLite
-- **PyYAML** for config
-- **asyncio** for execution engine (Tasks, Semaphores, `wait_for`)
-- **uvicorn** as ASGI server
-
----
-
 ## Project Structure
 
 ```
@@ -436,34 +392,13 @@ mcp_gateway/
 
 ---
 
-## Verifier Independence
-
-The verifier uses its own test fixtures and expected values. It does **not** trust the application's config file for assertions. This prevents weakening security via config changes to pass tests.
-
-The verifier is **hidden** — you will not see its test cases. Your implementation is scored on observable behavior: correct HTTP status codes, error codes, state transitions, and enforcement of security requirements at every operation.
-
----
-
 ## Test Command
 
-Run the verifier test suite inside the Docker container:
+Run the test suite inside the Docker container:
 
 ```
-pytest evaluation/tests/ -v
+pytest <test_dir> -v
 ```
-
-The reference solution must pass 100% of verifier checks. Mutants targeting each security requirement must be caught (scored 0 on the affected checks).
-
----
-
-## Deliverables
-
-1. **Gateway implementation** in `mcp_gateway/` package
-2. **Fixture servers** in `mcp_gateway/servers/`
-3. **Configuration** at `/app/config/gateway.yaml` (mounted in Docker)
-4. **SQLite database** at `/app/data/executions.db`
-5. **Dockerfile** for containerized execution
-6. **App setup scripts**: `build.sh`, `start.sh`, `reset.sh`
 
 ---
 
