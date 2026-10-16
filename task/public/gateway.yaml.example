@@ -1,7 +1,8 @@
 # Secure MCP Gateway - Example Configuration
 
 # This file is an example. The verifier uses its own independent fixtures
-# and does NOT trust this file for assertions.
+# and does NOT trust this file for assertions. Actual API keys and allowlists
+# are set by the evaluation harness and may differ from what is shown here.
 
 gateway:
   host: "0.0.0.0"
@@ -20,11 +21,11 @@ servers:
 
 clients:
   client_a:
-    api_key: "key-a-123"
+    api_key: "<api-key-a>"
     allowlist: ["documents.search_documents", "documents.get_document"]
   client_b:
-    api_key: "key-b-456"
+    api_key: "<api-key-b>"
     allowlist: ["jobs.execute_job", "jobs.get_job_status"]
   client_admin:
-    api_key: "key-admin-789"
+    api_key: "<api-key-admin>"
     allowlist: ["documents.search_documents", "documents.get_document", "jobs.execute_job", "jobs.get_job_status"]

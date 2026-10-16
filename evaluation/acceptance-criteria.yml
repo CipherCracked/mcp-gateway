@@ -1,0 +1,127 @@
+# Acceptance Criteria — Secure MCP Gateway RL Gym task
+
+# Every criterion below is verified by the test suite under /app/evaluation/tests/.
+# The reference solution must pass 100% of checks.
+
+authentication:
+  - id: AUTH-001
+    description: Missing X-API-Key header → 401 AUTH_MISSING
+    test: tests/test_auth_discovery.py::TestAuthentication::test_missing_api_key_returns_401
+  - id: AUTH-002
+    description: Invalid/empty API key → 401 AUTH_INVALID
+    test: tests/test_auth_discovery.py::TestAuthentication::test_invalid_api_key_returns_401
+  - id: AUTH-003
+    description: Error responses contain no stack traces or internal paths
+    test: tests/test_auth_discovery.py::TestAuthentication::test_error_response_has_no_stack_trace
+
+authorization:
+  - id: AUTHZ-001
+    description: GET /tools/list returns only allowlisted, namespaced tools per client
+    test: tests/test_auth_discovery.py::TestToolDiscovery
+  - id: AUTHZ-002
+    description: Calling a tool not in allowlist → 403 FORBIDDEN_TOOL
+    test: tests/test_invocation_validation.py::TestToolInvocation::test_forbidden_tool_returns_403
+  - id: AUTHZ-003
+    description: Non-owner cannot access another client's execution (status/cancel/result → 403)
+    test: tests/test_error_lifecycle.py::TestErrorCatalog::test_cross_client_access_returns_403
+
+discovery:
+  - id: DISC-001
+    description: Tool namespaced as {server}.{tool}, split on first dot
+    test: tests/test_auth_discovery.py::TestToolDiscovery
+  - id: DISC-002
+    description: Unknown/malformed tool name → 404 TOOL_NOT_FOUND
+    test: tests/test_invocation_validation.py::TestToolInvocation::test_tool_not_found_returns_404
+
+invocation:
+  - id: INV-001
+    description: POST /tools/call → 202 Accepted with execution_id and state=pending
+    test: tests/test_invocation_validation.py::TestToolInvocation::test_submit_returns_202_pending
+  - id: INV-002
+    description: Completed execution reachable via GET /executions/{id}/result
+    test: tests/test_invocation_validation.py::TestToolInvocation::test_result_retrieval_after_completion
+
+validation:
+  - id: VAL-001
+    description: Missing required field → 400 INVALID_ARGS with details.missing
+    test: tests/test_invocation_validation.py::TestArgumentValidation::test_missing_required_field
+  - id: VAL-002
+    description: Type mismatch → 400 INVALID_ARGS with details.type_mismatch
+    test: tests/test_invocation_validation.py::TestArgumentValidation::test_type_mismatch
+  - id: VAL-003
+    description: Unexpected field (additionalProperties:false) → 400 details.unexpected_fields
+    test: tests/test_invocation_validation.py::TestArgumentValidation::test_unexpected_field_rejected
+  - id: VAL-004
+    description: Enum mismatch → 400 INVALID_ARGS with details.enum_mismatch
+    test: tests/test_invocation_validation.py::TestArgumentValidation::test_enum_mismatch
+  - id: VAL-005
+    description: Request body over limit → 413 PAYLOAD_TOO_LARGE
+    test: tests/test_error_sanitization.py::TestErrorSanitization::test_payload_too_large_sanitized
+
+lifecycle:
+  - id: LIF-001
+    description: State machine pending→running→completed; terminal states are final
+    test: tests/test_error_lifecycle.py::TestExecutionLifecycle::test_status_pending_then_completed
+  - id: LIF-002
+    description: Client cancellation → cancelled state with RESULT_UNAVAILABLE error
+    test: tests/test_error_lifecycle.py::TestExecutionLifecycle::test_cancel_pending_execution
+  - id: LIF-003
+    description: Result for non-terminal execution → 409 RESULT_UNAVAILABLE
+    test: tests/test_error_lifecycle.py::TestErrorCatalog::test_result_unavailable_for_running
+  - id: LIF-004
+    description: Cancel already-terminal execution → 409 RESULT_UNAVAILABLE
+    test: tests/test_error_lifecycle.py::TestErrorCatalog::test_cancel_already_terminal_returns_409
+
+limits:
+  - id: LIM-001
+    description: Token bucket rate limit → 429 RATE_LIMITED when exhausted
+    test: tests/test_rate_limiting_concurrency.py::TestRateLimiting::test_token_bucket_allows_burst_up_to_capacity
+  - id: LIM-002
+    description: Per-client concurrency limit → 429 CONCURRENCY_EXCEEDED when slots full
+    test: tests/test_rate_limiting_concurrency.py::TestConcurrency::test_concurrency_limit_rejects_overflow
+  - id: LIM-003
+    description: Rate limit and concurrency are distinct codes
+    test: tests/test_rate_limiting_concurrency.py
+  - id: LIM-004
+    description: Execution timeout → failed with EXECUTION_TIMEOUT
+    test: tests/test_timeout.py::TestTimeout::test_execution_timeout_marks_failed
+
+failure_modes:
+  - id: FAIL-001
+    description: Upstream unavailable before submission → 502 UPSTREAM_UNAVAILABLE
+    test: tests/test_99_failure_modes.py::TestFailureModes::test_submission_failure_502_when_upstream_down
+  - id: FAIL-002
+    description: Upstream failure during execution → 202 then failed UPSTREAM_FAILED
+    test: tests/test_99_failure_modes.py::TestFailureModes::test_execution_failure_202_then_failed
+  - id: FAIL-003
+    description: Upstream MCP error sanitized (no leak) → UPSTREAM_FAILED
+    test: tests/test_99_failure_modes.py::TestFailureModes::test_mcp_error_sanitized_to_upstream_failed
+
+persistence:
+  - id: PERS-001
+    description: Terminal states survive gateway restart
+    test: tests/test_99_persistence_recovery.py::TestPersistenceRecovery
+  - id: PERS-002
+    description: Non-terminal executions become EXECUTION_INTERRUPTED on restart
+    test: tests/test_99_persistence_recovery.py::TestPersistenceRecovery
+
+revocation:
+  - id: REV-001
+    description: SIGHUP reloads config (no restart); new invocations of revoked tool → 403
+    test: tests/test_revocation.py::TestRevocation::test_sighup_revokes_tool_for_new_invocations
+  - id: REV-002
+    description: Revoked client loses access to in-flight results → 403 FORBIDDEN_EXECUTION
+    test: tests/test_revocation.py::TestRevocation::test_revoked_client_loses_access_to_result
+  - id: REV-003
+    description: Other clients unaffected by one client's revocation
+    test: tests/test_revocation.py::TestRevocation::test_other_clients_unaffected_by_revocation
+
+sanitization:
+  - id: SAN-001
+    description: No stack traces, internal paths, credentials, or control ports in responses
+    test: tests/test_error_sanitization.py::TestErrorSanitization
+
+global:
+  - id: GEN-001
+    description: All error responses follow {"error","code",details?} format
+    test: tests/test_error_codes (covered across all test files)

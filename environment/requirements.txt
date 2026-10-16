@@ -1,0 +1,10 @@
+fastapi>=0.110.0,<0.120.0
+uvicorn[standard]>=0.27.0,<0.32.0
+mcp>=1.0.0,<2.0.0
+aiosqlite>=0.19.0,<0.20.0
+PyYAML>=6.0,<7.0
+pydantic>=2.0,<3.0
+
+# Test dependencies
+pytest>=8.0,<9.0
+httpx>=0.26.0,<0.28.0

@@ -1,0 +1,74 @@
+# Scoring configuration — Secure MCP Gateway RL Gym task
+
+# The reference solution must achieve 100%. Mutants must be detected (tests fail
+# against each mutant). Frontier models are expected to score <30%.
+
+scoring:
+  # A check is "passed" only if its associated test(s) pass.
+  # Total score = (passed checks / total checks) * 100.
+  reference_target: 100
+  mutant_detection_required: true
+  frontier_model_ceiling: 30
+
+check_groups:
+  - name: authentication
+    weight: 0.12
+    checks: [AUTH-001, AUTH-002, AUTH-003]
+  - name: authorization
+    weight: 0.12
+    checks: [AUTHZ-001, AUTHZ-002, AUTHZ-003]
+  - name: discovery
+    weight: 0.08
+    checks: [DISC-001, DISC-002]
+  - name: invocation
+    weight: 0.08
+    checks: [INV-001, INV-002]
+  - name: validation
+    weight: 0.10
+    checks: [VAL-001, VAL-002, VAL-003, VAL-004, VAL-005]
+  - name: lifecycle
+    weight: 0.10
+    checks: [LIF-001, LIF-002, LIF-003, LIF-004]
+  - name: limits
+    weight: 0.10
+    checks: [LIM-001, LIM-002, LIM-003, LIM-004]
+  - name: failure_modes
+    weight: 0.08
+    checks: [FAIL-001, FAIL-002, FAIL-003]
+  - name: persistence
+    weight: 0.06
+    checks: [PERS-001, PERS-002]
+  - name: revocation
+    weight: 0.08
+    checks: [REV-001, REV-002, REV-003]
+  - name: sanitization
+    weight: 0.08
+    checks: [SAN-001]
+
+pass_threshold: 1.0  # reference must pass all groups
+
+mutants:
+  - id: MUT-AUTH-DISABLED
+    description: Authentication check removed
+    file: mutants/mut_auth_disabled/main.py
+    expected: AUTH-001, AUTH-002 fail
+  - id: MUT-WRONG-CODE
+    description: FORBIDDEN_TOOL returns 404 instead of 403
+    file: mutants/mut_wrong_code/errors.py
+    expected: AUTHZ-002 fails
+  - id: MUT-NO-SANITIZE
+    description: Stack traces leaked in error responses
+    file: mutants/mut_no_sanitize/errors.py
+    expected: SAN-001 fails
+  - id: MUT-NO-RATELIMIT
+    description: Rate limiter always allows
+    file: mutants/mut_no_ratelimit/limits.py
+    expected: LIM-001 fails
+  - id: MUT-NO-CONCURRENCY
+    description: Concurrency limiter always allows
+    file: mutants/mut_no_concurrency/limits.py
+    expected: LIM-002 fails
+  - id: MUT-NO-REVOCATION
+    description: SIGHUP does not reload config
+    file: mutants/mut_no_revocation/main.py
+    expected: REV-001, REV-002 fail

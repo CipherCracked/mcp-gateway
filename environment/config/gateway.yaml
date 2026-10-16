@@ -1,0 +1,28 @@
+# Default runtime configuration for the Docker image.
+# The evaluation harness may replace /app/config/gateway.yaml with its own fixtures.
+
+gateway:
+  host: "0.0.0.0"
+  port: 8000
+  request_max_bytes: 1048576
+  rate_limit_per_minute: 60
+  concurrency_limit: 10
+  execution_timeout_seconds: 30
+  gateway_timeout_seconds: 35
+
+servers:
+  documents:
+    command: ["python", "-m", "mcp_gateway.servers.documents"]
+  jobs:
+    command: ["python", "-m", "mcp_gateway.servers.jobs"]
+
+clients:
+  client_a:
+    api_key: "key-a-123"
+    allowlist: ["documents.search_documents", "documents.get_document"]
+  client_b:
+    api_key: "key-b-456"
+    allowlist: ["jobs.execute_job", "jobs.get_job_status"]
+  client_admin:
+    api_key: "key-admin-789"
+    allowlist: ["documents.search_documents", "documents.get_document", "jobs.execute_job", "jobs.get_job_status"]
