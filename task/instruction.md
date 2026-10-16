@@ -247,7 +247,7 @@ pending → running → completed
 
 Upstream exceptions are caught, logged internally (full detail), and returned sanitized:
 ```json
-{ "error": "upstream_error", "code": "UPSTREAM_FAILED" }
+{ "error": "Upstream execution failed", "code": "UPSTREAM_FAILED" }
 ```
 
 ---
@@ -320,25 +320,25 @@ The gateway launches MCP servers as child subprocesses via stdio. All components
 
 ### Documents Server (`python -m mcp_gateway.servers.documents`)
 - **MCP Transport**: stdio (spawned by gateway)
-- **Control Port**: `localhost:9001` (test-only — not part of the gateway API)
 - Tools:
   - `search_documents(query: string, limit?: integer) → {documents: [{id, title, snippet}]}`
   - `get_document(id: string) → {id, title, content}`
 
 ### Jobs Server (`python -m mcp_gateway.servers.jobs`)
 - **MCP Transport**: stdio (spawned by gateway)
-- **Control Port**: `localhost:9002` (test-only — not part of the gateway API)
 - Tools:
   - `execute_job(payload: object, priority?: "low"|"normal"|"high") → {job_id: string}`
   - `get_job_status(job_id: string) → {job_id, state, result?, error?}`
 
-Test-only control endpoints (`/_test/fail_next`, `/_test/delay`, `/_test/crash`) exist for external test harnesses. Your gateway must not depend on or call these endpoints.
+Test-only control endpoints exist for external test harnesses. Your gateway must not depend on or call these endpoints.
 
 ---
 
 ## Configuration File
 
 **Path**: `/app/config/gateway.yaml` — read by the gateway at runtime.
+
+The example below shows the config schema. Actual values (API keys, allowlists) are set by the evaluation harness and may differ from what is shown here.
 
 ```yaml
 gateway:
@@ -358,19 +358,33 @@ servers:
 
 clients:
   client_a:
-    api_key: "key-a-123"
+    api_key: "<api-key-a>"
     allowlist: ["documents.search_documents", "documents.get_document"]
   client_b:
-    api_key: "key-b-456"
+    api_key: "<api-key-b>"
     allowlist: ["jobs.execute_job", "jobs.get_job_status"]
   client_admin:
-    api_key: "key-admin-789"
+    api_key: "<api-key-admin>"
     allowlist: ["documents.search_documents", "documents.get_document", "jobs.execute_job", "jobs.get_job_status"]
 ```
 
 ---
 
-## Project Structure
+## Running the Gateway
+
+Start the gateway with uvicorn:
+
+```
+uvicorn mcp_gateway.main:app --host 0.0.0.0 --port 8000
+```
+
+The gateway reads configuration from `/app/config/gateway.yaml` at startup and spawns the two upstream MCP servers as child subprocesses.
+
+---
+
+## Project Structure (Suggested)
+
+The following is one valid organization. You may structure files differently as long as all endpoints behave as specified.
 
 ```
 mcp_gateway/
@@ -385,8 +399,8 @@ mcp_gateway/
 ├── limits.py               # Token bucket, semaphore management
 ├── servers/
 │   ├── __init__.py
-│   ├── documents.py        # Documents MCP server (stdio + control port)
-│   └── jobs.py             # Jobs MCP server (stdio + control port)
+│   ├── documents.py        # Documents MCP server (stdio)
+│   └── jobs.py             # Jobs MCP server (stdio)
 └── models.py               # Pydantic models for requests/responses
 ```
 
@@ -397,8 +411,14 @@ mcp_gateway/
 Run the test suite inside the Docker container:
 
 ```
-pytest <test_dir> -v
+pytest /app/evaluation/tests/ -v
 ```
+
+---
+
+## Validation
+
+The test suite in the container verifies all observable behaviors: authentication, authorization, state transitions, error codes, limits, persistence, and revocation. All checks must pass.
 
 ---
 
