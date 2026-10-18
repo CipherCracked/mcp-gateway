@@ -108,11 +108,11 @@ class TestPersistenceRecovery:
 
             # Restart a gateway on port 8000 so subsequent tests (which use the
             # session-scoped gateway_process fixture) still have a server to
-            # talk to. The session fixture's teardown will no-op on the already-
-            # dead original proc.
+            # talk to. Track it so it can be cleaned up at session teardown.
             replacement = _start_gateway()
             try:
                 _wait_ready(replacement)
             except RuntimeError:
                 pass  # best effort; if it fails, downstream tests will too
-            # Leave replacement running for the rest of the session.
+            # Store replacement PID for the session fixture teardown to clean up.
+            gateway_process._replacement_proc = replacement

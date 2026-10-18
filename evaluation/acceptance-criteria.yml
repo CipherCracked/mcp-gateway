@@ -103,22 +103,22 @@ limits:
 failure_modes:
   - id: FAIL-001
     description: Upstream unavailable before submission → 502 UPSTREAM_UNAVAILABLE
-    test: tests/test_99_failure_modes.py::TestFailureModes::test_submission_failure_502_when_upstream_down
+    test: tests/test_zz_failure_modes.py::TestFailureModes::test_submission_failure_502_when_upstream_down
   - id: FAIL-002
     description: Upstream failure during execution → 202 then failed UPSTREAM_FAILED
-    test: tests/test_99_failure_modes.py::TestFailureModes::test_execution_failure_202_then_failed
+    test: tests/test_zz_failure_modes.py::TestFailureModes::test_execution_failure_202_then_failed
     pair_with: SAN-001
   - id: FAIL-003
     description: Upstream MCP error sanitized (no leak) → UPSTREAM_FAILED
-    test: tests/test_99_failure_modes.py::TestFailureModes::test_mcp_error_sanitized_to_upstream_failed
+    test: tests/test_zz_failure_modes.py::TestFailureModes::test_mcp_error_sanitized_to_upstream_failed
 
 persistence:
   - id: PERS-001
     description: Terminal states survive gateway restart
-    test: tests/test_99_persistence_recovery.py::TestPersistenceRecovery
+    test: tests/test_persistence_recovery.py::TestPersistenceRecovery::test_terminal_states_survive_restart_non_terminal_interrupted
   - id: PERS-002
     description: Non-terminal executions become EXECUTION_INTERRUPTED on restart
-    test: tests/test_99_persistence_recovery.py::TestPersistenceRecovery
+    test: tests/test_persistence_recovery.py::TestPersistenceRecovery::test_terminal_states_survive_restart_non_terminal_interrupted
 
 revocation:
   - id: REV-001

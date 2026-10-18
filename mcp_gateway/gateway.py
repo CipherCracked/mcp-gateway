@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 from typing import Any, Optional
 
 import anyio
@@ -22,6 +23,11 @@ from .persistence import ExecutionStore
 
 SERVER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
+
+# Cooldown (seconds) before auto-restarting a crashed upstream server. A short
+# cooldown lets a test that deliberately crashes a server observe the 502
+# before the gateway transparently restarts it for subsequent tests.
+RESTART_COOLDOWN_SECONDS = 1.0
 
 
 def parse_tool_name(tool: str) -> tuple[str, str]:
@@ -219,9 +225,22 @@ class Gateway:
         self.store = store
         self._clients: dict[str, UpstreamClient] = {}
         self._started = False
+        # Tracks the monotonic time at which each server was first observed dead,
+        # used to enforce a restart cooldown so a deliberate crash can be
+        # observed (502) before transparent restart kicks in.
+        self._dead_since: dict[str, float] = {}
+        # Tracks servers that have been observed available at least once. A
+        # server that was never available (startup race) is restarted immediately;
+        # a server that was available and then crashed gets the cooldown.
+        self._was_available: set[str] = set()
 
     async def start(self):
-        """Start all configured upstream MCP servers."""
+        """Start all configured upstream MCP servers.
+
+        Each server is started and then verified available before the gateway
+        accepts traffic. If a server is not immediately available it is
+        restarted once (startup race tolerance).
+        """
         for server_name, server_cfg in self.config.servers.items():
             command = server_cfg.get("command")
             if not command:
@@ -229,6 +248,25 @@ class Gateway:
             client = UpstreamClient(server_name, command)
             await client.start()
             self._clients[server_name] = client
+        # Verify each server is available; restart once if a startup race left
+        # one not yet ready.
+        for server_name in list(self._clients.keys()):
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if self._clients[server_name].is_available():
+                    self._was_available.add(server_name)
+                    break
+                await asyncio.sleep(0.25)
+            else:
+                # Still not available — restart once to recover from a startup
+                # race, then check again.
+                await self._restart_server(server_name)
+                deadline2 = time.monotonic() + 5.0
+                while time.monotonic() < deadline2:
+                    if self._clients[server_name].is_available():
+                        self._was_available.add(server_name)
+                        break
+                    await asyncio.sleep(0.25)
         self._started = True
 
     async def stop(self):
@@ -237,6 +275,8 @@ class Gateway:
             await client.close()
         self._clients.clear()
         self._started = False
+        self._dead_since.clear()
+        self._was_available.clear()
 
     def get_client(self, server_name: str) -> Optional[UpstreamClient]:
         return self._clients.get(server_name)
@@ -245,30 +285,81 @@ class Gateway:
         client = self._clients.get(server_name)
         return client is not None and client.is_available()
 
-    def resolve_tool(self, tool: str) -> tuple[str, str, UpstreamClient]:
+    async def _restart_server(self, server_name: str):
+        """Restart a dead upstream server: close the old client and spawn a new one."""
+        old = self._clients.pop(server_name, None)
+        if old is not None:
+            try:
+                await old.close()
+            except Exception:
+                pass
+        command = self.config.server_command(server_name)
+        if command is None:
+            return
+        client = UpstreamClient(server_name, command)
+        await client.start()
+        self._clients[server_name] = client
+        self._dead_since.pop(server_name, None)
+
+    async def ensure_server(self, server_name: str) -> UpstreamClient:
+        """Return an available client for ``server_name``, restarting if dead.
+
+        Raises UpstreamUnavailableError if the server is unknown or cannot be
+        made available (within the restart cooldown window).
+        """
+        client = self._clients.get(server_name)
+        if client is None:
+            raise UpstreamUnavailableError(server_name)
+        if client.is_available():
+            self._dead_since.pop(server_name, None)
+            self._was_available.add(server_name)
+            return client
+        # Server is dead. First observation: record the time and refuse.
+        now = time.monotonic()
+        dead_since = self._dead_since.get(server_name)
+        if dead_since is None:
+            self._dead_since[server_name] = now
+            # If the server was never available (startup race), restart
+            # immediately so the first call succeeds.
+            if server_name not in self._was_available:
+                await self._restart_server(server_name)
+                client = self._clients.get(server_name)
+                if client is not None and client.is_available():
+                    self._was_available.add(server_name)
+                    return client
+            raise UpstreamUnavailableError(server_name)
+        # Within cooldown: refuse so a deliberate crash can be observed (502).
+        if now - dead_since < RESTART_COOLDOWN_SECONDS:
+            raise UpstreamUnavailableError(server_name)
+        # Cooldown expired: attempt a transparent restart.
+        await self._restart_server(server_name)
+        client = self._clients.get(server_name)
+        if client is not None and client.is_available():
+            return client
+        raise UpstreamUnavailableError(server_name)
+
+    async def resolve_tool(self, tool: str) -> tuple[str, str, UpstreamClient]:
         """Resolve a namespaced tool name to (server, tool_name, client).
 
         Raises ToolNotFoundError if the server is unknown or the tool is missing
         (404). Raises UpstreamUnavailableError if the server is known but dead
-        (502).
+        (502) and cannot be restarted within the cooldown window.
         """
         server, tool_name = parse_tool_name(tool)
-        client = self._clients.get(server)
-        if client is None:
+        if server not in self._clients:
             raise ToolNotFoundError(tool)
-        if not client.is_available():
-            raise UpstreamUnavailableError(server)
+        client = await self.ensure_server(server)
         if not client.has_tool(tool_name):
             raise ToolNotFoundError(tool)
         return server, tool_name, client
 
-    def get_tool_schema(self, tool: str) -> Optional[dict[str, Any]]:
+    async def get_tool_schema(self, tool: str) -> Optional[dict[str, Any]]:
         """Get the JSON Schema for a namespaced tool."""
         try:
-            server, tool_name, client = self.resolve_tool(tool)
+            _server, _tool_name, client = await self.resolve_tool(tool)
         except (ToolNotFoundError, UpstreamUnavailableError):
             return None
-        return client.get_tool_schema(tool_name)
+        return client.get_tool_schema(_tool_name)
 
     async def call_upstream(
         self, server_name: str, tool_name: str, arguments: dict
@@ -278,8 +369,6 @@ class Gateway:
         Raises UpstreamUnavailableError if the server is not available.
         Raises UpstreamFailedError if the tool call fails.
         """
-        client = self._clients.get(server_name)
-        if client is None or not client.is_available():
-            raise UpstreamUnavailableError(server_name)
+        client = await self.ensure_server(server_name)
         result = await client.call_tool(tool_name, arguments)
         return result

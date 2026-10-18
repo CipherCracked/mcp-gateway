@@ -132,7 +132,8 @@ def _check_tool_permission(client_id: str, tool: str):
     """Raise ForbiddenToolError if the client is not allowed to call the tool."""
     if _config is None:
         raise RuntimeError("Gateway not initialized")
-    if not _config.is_tool_allowed(client_id, tool):
+    allowed = _config.is_tool_allowed(client_id, tool)
+    if not allowed:
         raise ForbiddenToolError(tool)
 
 
@@ -226,28 +227,23 @@ async def call_tool(request: Request, body: ToolCallRequest):
     client_id, _ = await _auth_client(request)
     tool = body.tool
 
-    if _gateway is None:
+    if _gateway is None or _exec_manager is None:
         raise RuntimeError("Gateway not initialized")
 
-    # Resolve tool (existence + server availability) BEFORE permission:
-    # an unknown tool returns 404 TOOL_NOT_FOUND even if the client is not
-    # permitted for it; a known tool on a dead upstream returns 502.
-    server, tool_name, _ = _gateway.resolve_tool(tool)
+    # Resolve the namespaced tool to (server, tool_name, client). This runs
+    # BEFORE the permission check so that unknown tools surface as 404 and a
+    # dead upstream that cannot be restarted surfaces as 502. The permission
+    # check follows, so a disallowed-but-known tool returns 403.
+    server, tool_name, client = await _gateway.resolve_tool(tool)
 
-    # Permission check
+    # Check permission after the tool is known to exist.
     _check_tool_permission(client_id, tool)
 
-    # Argument validation against tool schema
-    schema = _gateway.get_tool_schema(tool)
+    schema = client.get_tool_schema(tool_name)
     _validate_arguments(body.arguments, schema)
 
-    execution_id, state = await _exec_manager.submit(
-        client_id=client_id,
-        tool=tool,
-        server=server,
-        arguments=body.arguments,
-    )
-    return ToolCallResponse(execution_id=execution_id, state=state)
+    execution_id, _ = await _exec_manager.submit(client_id, tool, server, body.arguments)
+    return ToolCallResponse(execution_id=execution_id, state="pending")
 
 
 @app.get("/executions/{execution_id}/status", response_model=ExecutionStatusResponse)

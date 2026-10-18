@@ -41,6 +41,34 @@ def _kill_process_tree(pid: int) -> None:
         pass
 
 
+def _free_port(port: int) -> None:
+    """Kill any process already listening on ``port``.
+
+    The gateway (8000) and the fixture control servers (documents:9001,
+    jobs:9002) must bind cleanly. On Windows, SO_REUSEADDR lets multiple
+    processes share a port, so stale upstream servers from a previous run can
+    silently steal control-endpoint traffic (delay / fail_next / crash) away
+    from the live gateway children, making tests flaky. Freeing the ports up
+    front makes every test run self-contained.
+    """
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=10
+        ).stdout
+        for line in out.splitlines():
+            if f":{port} " in line and "LISTENING" in line:
+                parts = line.split()
+                pid = int(parts[-1])
+                if pid > 0:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True,
+                        timeout=5,
+                    )
+    except Exception:
+        pass
+
+
 def _control_post(base: str, path: str, payload: dict) -> httpx.Response:
     """POST to a fixture control endpoint. Crashes may drop the connection."""
     try:
@@ -74,6 +102,24 @@ def crash_jobs() -> httpx.Response:
 @pytest.fixture(scope="session")
 def gateway_process():
     """Start the gateway (uvicorn) once per session and tear it down at the end."""
+
+    # Free the ports the gateway and its upstream fixtures bind so stale
+    # processes from a previous run can't steal control-endpoint traffic
+    # (delay / fail_next / crash) away from the live children — this is what
+    # made tests flaky across runs on Windows (SO_REUSEADDR port sharing).
+    for port in (8000, 9001, 9002):
+        _free_port(port)
+
+    # Clean stale execution DB from previous runs so recovery tests start fresh.
+    db_path = Path("/app/data/executions.db")
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(db_path) + suffix)
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
     proc = subprocess.Popen(
@@ -120,12 +166,23 @@ def gateway_process():
 
     yield proc
 
+    # Kill the session gateway.
     _kill_process_tree(proc.pid)
     proc.terminate()
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+    # Also clean up any replacement gateway started by the persistence test.
+    replacement = getattr(proc, "_replacement_proc", None)
+    if replacement is not None:
+        _kill_process_tree(replacement.pid)
+        replacement.terminate()
+        try:
+            replacement.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            replacement.kill()
 
 
 @pytest.fixture

@@ -91,9 +91,11 @@ class ExecutionManager:
             raise ConcurrencyExceededError()
 
         # Check upstream availability before accepting the job
-        if not self.gateway.is_server_available(server):
+        try:
+            await self.gateway.ensure_server(server)
+        except UpstreamUnavailableError:
             self.concurrency_limiter.release(client_id)
-            raise UpstreamUnavailableError(server)
+            raise
 
         execution_id = self._new_execution_id()
         now = time.monotonic()

@@ -92,7 +92,7 @@ class TestExecutionLifecycle:
             json={"tool": "documents.search_documents", "arguments": {"query": "cancel-me"}},
         )
         exec_id = r.json()["execution_id"]
-        time.sleep(0.5)
+        wait_for_state(client, exec_id, auth_headers_admin, {"running"})
         r = client.post(f"/executions/{exec_id}/cancel", headers=auth_headers_admin)
         assert r.status_code == 200, r.text
         assert r.json()["state"] == "cancelled"
@@ -106,7 +106,7 @@ class TestExecutionLifecycle:
             json={"tool": "documents.search_documents", "arguments": {"query": "cancel-me2"}},
         )
         exec_id = r.json()["execution_id"]
-        time.sleep(0.5)
+        wait_for_state(client, exec_id, auth_headers_admin, {"running"})
         client.post(f"/executions/{exec_id}/cancel", headers=auth_headers_admin)
         record = wait_for_state(client, exec_id, auth_headers_admin, {"cancelled"})
         assert record["error"] is not None
@@ -120,7 +120,7 @@ class TestExecutionLifecycle:
             json={"tool": "documents.search_documents", "arguments": {"query": "cross"}},
         )
         exec_id = r.json()["execution_id"]
-        time.sleep(0.5)
+        wait_for_state(client, exec_id, auth_headers_a, {"running"})
         r = client.post(f"/executions/{exec_id}/cancel", headers=auth_headers_b)
         assert r.status_code == 403, r.text
         assert r.json()["code"] == "FORBIDDEN_EXECUTION"
