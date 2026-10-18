@@ -1,8 +1,10 @@
 """Scoring pipeline for the Secure MCP Gateway RL Gym task.
 
 Loads scoring.yml + acceptance-criteria.yml, runs the verifier test suite,
-computes weighted partial credit per check group, handles blocked vs failed
-state, and outputs the reference score plus mutant detection rate.
+computes weighted partial credit per check (HackerRank-Bench methodology:
+each check individually earns its weight if passed, 0 if failed or blocked),
+handles blocked vs failed state, and outputs the reference score plus mutant
+detection rate.
 
 Usage:
     python evaluation/scoring/pipeline.py score
@@ -137,57 +139,42 @@ def compute_weighted_score(
 ) -> tuple[float, list[dict]]:
     """Compute weighted partial credit score from per-check results.
 
-    A check group earns its weight only if every check in the group passed
-    and none are blocked. Blocked checks earn 0 but are distinguished from
-    failed checks in the output.
+    Each check individually earns its weight if passed, and 0 if failed or
+    blocked. Blocked checks earn 0 but are distinguished from failed checks
+    in the output. This matches the HackerRank-Bench per-check partial credit
+    methodology: score = sum(weight_i * completion_i) / sum(weight_i).
     """
     groups = scoring_cfg["check_groups"]
     total_weight = 0.0
     earned_weight = 0.0
-    group_details: list[dict] = []
+    check_details: list[dict] = []
 
     for group in groups:
-        name = group["name"]
-        weight = float(group["weight"])
-        checks = list(group["checks"])
-
-        group_passed = 0
-        group_failed = 0
-        group_blocked = 0
-        check_details: dict[str, str] = {}
-
-        for check_id in checks:
+        group_name = group["name"]
+        for check in group["checks"]:
+            check_id = check["id"]
+            weight = float(check["weight"])
             status = check_results.get(check_id, "blocked")
-            check_details[check_id] = status
-            if status == "passed":
-                group_passed += 1
-            elif status == "blocked":
-                group_blocked += 1
-            else:
-                group_failed += 1
 
-        # Group earns its full weight only when all checks pass, none blocked.
-        group_earns = group_passed == len(checks) and group_blocked == 0
-        group_score = weight if group_earns else 0.0
+            check_earns = status == "passed"
+            check_score = weight if check_earns else 0.0
 
-        total_weight += weight
-        earned_weight += group_score
+            total_weight += weight
+            earned_weight += check_score
 
-        group_details.append(
-            {
-                "name": name,
-                "weight": weight,
-                "checks": check_details,
-                "passed": group_passed,
-                "failed": group_failed,
-                "blocked": group_blocked,
-                "earns_weight": group_earns,
-                "group_score": group_score,
-            }
-        )
+            check_details.append(
+                {
+                    "id": check_id,
+                    "group": group_name,
+                    "weight": weight,
+                    "status": status,
+                    "earns_weight": check_earns,
+                    "check_score": check_score,
+                }
+            )
 
     final_score = earned_weight / total_weight if total_weight > 0 else 0.0
-    return final_score, group_details
+    return final_score, check_details
 
 
 def build_check_to_test(acceptance_cfg: dict) -> dict[str, str]:
@@ -215,10 +202,10 @@ def cmd_score() -> int:
     for check_id, test_spec in check_to_test.items():
         check_results[check_id] = check_test_result(results, test_spec)
 
-    final_score, group_details = compute_weighted_score(scoring_cfg, check_results)
+    final_score, check_details = compute_weighted_score(scoring_cfg, check_results)
 
     weights_sum = round(
-        sum(float(g["weight"]) for g in scoring_cfg["check_groups"]), 4
+        sum(float(c["weight"]) for g in scoring_cfg["check_groups"] for c in g["checks"]), 4
     )
     reference_target = float(scoring_cfg["scoring"]["reference_target"]) / 100.0
 
@@ -227,7 +214,7 @@ def cmd_score() -> int:
         "weights_sum": weights_sum,
         "reference_target": reference_target,
         "pass_threshold": float(scoring_cfg.get("pass_threshold", 1.0)),
-        "groups": group_details,
+        "checks": check_details,
     }
 
     print(json.dumps(report, indent=2))

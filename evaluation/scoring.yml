@@ -1,11 +1,18 @@
 # Scoring configuration — Secure MCP Gateway RL Gym task
-
+#
+# Per-check weighted partial credit (HackerRank-Bench methodology):
+#   score = sum(weight_i * completion_i) / sum(weight_i)
+#   where completion_i is 1 if the check passed, 0 if failed or blocked.
+# Each check individually earns its weight if passed, 0 if failed or blocked.
+# Blocked checks earn 0 but are distinguished from failed checks so the
+# verifier can report an unevaluable check separately from a broken one.
+#
 # The reference solution must achieve 100%. Mutants must be detected (tests fail
 # against each mutant). Frontier models are expected to score <30%.
 
 scoring:
   # A check is "passed" only if its associated test(s) pass.
-  # Total score = sum of weights for passed check groups (weighted partial credit).
+  # Total score = sum of weights for passed checks (weighted partial credit per check).
   # A check that cannot be evaluated (e.g. its safety property is not established)
   # is "blocked": it earns 0 but is distinguished from "failed" so the verifier
   # can report an unevaluable check separately from a genuinely broken one.
@@ -15,40 +22,101 @@ scoring:
 
 check_groups:
   - name: authentication
-    weight: 0.12
-    checks: [AUTH-001, AUTH-002, AUTH-003]
+    checks:
+      - id: AUTH-001
+        weight: 0.04
+      - id: AUTH-002
+        weight: 0.04
+      - id: AUTH-003
+        weight: 0.04
   - name: authorization
-    weight: 0.12
-    checks: [AUTHZ-001, AUTHZ-002, AUTHZ-003]
+    checks:
+      - id: AUTHZ-001
+        weight: 0.04
+      - id: AUTHZ-002
+        weight: 0.04
+      - id: AUTHZ-003
+        weight: 0.04
   - name: discovery
-    weight: 0.08
-    checks: [DISC-001, DISC-002]
+    checks:
+      - id: DISC-001
+        weight: 0.04
+      - id: DISC-002
+        weight: 0.04
   - name: invocation
-    weight: 0.08
-    checks: [INV-001, INV-002]
+    checks:
+      - id: INV-001
+        weight: 0.04
+      - id: INV-002
+        weight: 0.04
   - name: validation
-    weight: 0.10
-    checks: [VAL-001, VAL-002, VAL-003, VAL-004, VAL-005, VAL-006]
+    checks:
+      - id: VAL-001
+        weight: 0.015
+      - id: VAL-002
+        weight: 0.015
+      - id: VAL-003
+        weight: 0.015
+      - id: VAL-004
+        weight: 0.015
+      - id: VAL-005
+        weight: 0.01
+      - id: VAL-006
+        weight: 0.01
   - name: lifecycle
-    weight: 0.10
-    checks: [LIF-001, LIF-002, LIF-003, LIF-004, LIF-005]
+    checks:
+      - id: LIF-001
+        weight: 0.02
+      - id: LIF-002
+        weight: 0.02
+      - id: LIF-003
+        weight: 0.02
+      - id: LIF-004
+        weight: 0.02
+      - id: LIF-005
+        weight: 0.02
   - name: limits
-    weight: 0.10
-    checks: [LIM-001, LIM-002, LIM-003, LIM-004]
+    checks:
+      - id: LIM-001
+        weight: 0.025
+      - id: LIM-002
+        weight: 0.025
+      - id: LIM-003
+        weight: 0.025
+      - id: LIM-004
+        weight: 0.025
   - name: failure_modes
-    weight: 0.08
-    checks: [FAIL-001, FAIL-002, FAIL-003]
+    checks:
+      - id: FAIL-001
+        weight: 0.03
+      - id: FAIL-002
+        weight: 0.03
+      - id: FAIL-003
+        weight: 0.02
   - name: persistence
-    weight: 0.06
-    checks: [PERS-001, PERS-002]
+    checks:
+      - id: PERS-001
+        weight: 0.03
+      - id: PERS-002
+        weight: 0.03
   - name: revocation
-    weight: 0.08
-    checks: [REV-001, REV-002, REV-003]
+    checks:
+      - id: REV-001
+        weight: 0.03
+      - id: REV-002
+        weight: 0.03
+      - id: REV-003
+        weight: 0.02
   - name: sanitization
-    weight: 0.08
-    checks: [SAN-001]
+    checks:
+      - id: SAN-001
+        weight: 0.08
+  - name: global
+    checks:
+      - id: GEN-001
+        weight: 0.02
 
-pass_threshold: 1.0  # reference must pass all groups
+pass_threshold: 1.0  # reference must pass all checks
 
 mutants:
   - id: MUT-AUTH-DISABLED
