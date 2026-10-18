@@ -5,7 +5,10 @@
 
 scoring:
   # A check is "passed" only if its associated test(s) pass.
-  # Total score = (passed checks / total checks) * 100.
+  # Total score = sum of weights for passed check groups (weighted partial credit).
+  # A check that cannot be evaluated (e.g. its safety property is not established)
+  # is "blocked": it earns 0 but is distinguished from "failed" so the verifier
+  # can report an unevaluable check separately from a genuinely broken one.
   reference_target: 100
   mutant_detection_required: true
   frontier_model_ceiling: 30
@@ -25,10 +28,10 @@ check_groups:
     checks: [INV-001, INV-002]
   - name: validation
     weight: 0.10
-    checks: [VAL-001, VAL-002, VAL-003, VAL-004, VAL-005]
+    checks: [VAL-001, VAL-002, VAL-003, VAL-004, VAL-005, VAL-006]
   - name: lifecycle
     weight: 0.10
-    checks: [LIF-001, LIF-002, LIF-003, LIF-004]
+    checks: [LIF-001, LIF-002, LIF-003, LIF-004, LIF-005]
   - name: limits
     weight: 0.10
     checks: [LIM-001, LIM-002, LIM-003, LIM-004]
@@ -72,3 +75,33 @@ mutants:
     description: SIGHUP does not reload config
     file: mutants/mut_no_revocation/main.py
     expected: REV-001, REV-002 fail
+
+# Blocked-state schema: a check whose safety property cannot be established is
+# "blocked" rather than "failed". It earns 0 weight but is reported separately so
+# the verifier can distinguish an unevaluable check from a genuinely broken one.
+blocked_state:
+  # A check is blocked when its precondition cannot be verified (e.g. the
+  # gateway is not running, a prerequisite fixture is unavailable, or a
+  # skip-conditional such as "skipped on Windows" is met).
+  blocked_earns: 0
+  distinguished_from_failed: true
+  report_as: "blocked"  # distinct status value alongside "passed" and "failed"
+
+# Verifier quality targets (Context A — static eval task).
+# Context B measures (TTS/AUC/ECE, adversarial coverage >90%, false-negative
+# pipelines, drift monitoring, reward-hacking detection) are documented in
+# docs/rl-gym-evaluation-standards/itds/verifier-quality-measurement.md and
+# deferred for future RL-training pipelines; they are not part of this task.
+verifier_quality:
+  # Every functional ("did it") check should be paired with an invariant
+  # ("didn't break") check so silent invariant violations are caught rather
+  # than exploited (variant/invariant testing). Applied now via check pairing.
+  check_pairing_required: true
+  # Mutant detection rate reported as a separate metric alongside reference score.
+  detection_rate_required: true
+  # Reference solution must pass 100% of checks (surfaces wrongful rejections).
+  reference_pass_required: 100
+  # Adversarial gap awareness: a verifier catching only 60% of errors leaves a
+  # 40% gap models find and exploit. Check pairing closes part of that gap at
+  # design time; adversarial coverage targets (>90%) are Context B / deferred.
+  adversarial_gap_aware: true

@@ -7,12 +7,15 @@ authentication:
   - id: AUTH-001
     description: Missing X-API-Key header → 401 AUTH_MISSING
     test: tests/test_auth_discovery.py::TestAuthentication::test_missing_api_key_returns_401
+    pair_with: AUTH-003
   - id: AUTH-002
     description: Invalid/empty API key → 401 AUTH_INVALID
     test: tests/test_auth_discovery.py::TestAuthentication::test_invalid_api_key_returns_401
+    pair_with: AUTH-003
   - id: AUTH-003
-    description: Error responses contain no stack traces or internal paths
+    description: Error responses contain no stack traces or internal paths (invariant — "didn't break")
     test: tests/test_auth_discovery.py::TestAuthentication::test_error_response_has_no_stack_trace
+    invariant_of: [AUTH-001, AUTH-002]
 
 authorization:
   - id: AUTHZ-001
@@ -21,6 +24,7 @@ authorization:
   - id: AUTHZ-002
     description: Calling a tool not in allowlist → 403 FORBIDDEN_TOOL
     test: tests/test_invocation_validation.py::TestToolInvocation::test_forbidden_tool_returns_403
+    pair_with: SAN-001
   - id: AUTHZ-003
     description: Non-owner cannot access another client's execution (status/cancel/result → 403)
     test: tests/test_error_lifecycle.py::TestErrorCatalog::test_cross_client_access_returns_403
@@ -37,6 +41,7 @@ invocation:
   - id: INV-001
     description: POST /tools/call → 202 Accepted with execution_id and state=pending
     test: tests/test_invocation_validation.py::TestToolInvocation::test_submit_returns_202_pending
+    pair_with: SAN-001
   - id: INV-002
     description: Completed execution reachable via GET /executions/{id}/result
     test: tests/test_invocation_validation.py::TestToolInvocation::test_result_retrieval_after_completion
@@ -57,11 +62,16 @@ validation:
   - id: VAL-005
     description: Request body over limit → 413 PAYLOAD_TOO_LARGE
     test: tests/test_error_sanitization.py::TestErrorSanitization::test_payload_too_large_sanitized
+  - id: VAL-006
+    description: Validation error responses are sanitized (invariant — "didn't break")
+    test: tests/test_error_sanitization.py::TestErrorSanitization
+    invariant_of: [VAL-001, VAL-002, VAL-003, VAL-004, VAL-005]
 
 lifecycle:
   - id: LIF-001
     description: State machine pending→running→completed; terminal states are final
     test: tests/test_error_lifecycle.py::TestExecutionLifecycle::test_status_pending_then_completed
+    pair_with: SAN-001
   - id: LIF-002
     description: Client cancellation → cancelled state with RESULT_UNAVAILABLE error
     test: tests/test_error_lifecycle.py::TestExecutionLifecycle::test_cancel_pending_execution
@@ -71,6 +81,10 @@ lifecycle:
   - id: LIF-004
     description: Cancel already-terminal execution → 409 RESULT_UNAVAILABLE
     test: tests/test_error_lifecycle.py::TestErrorCatalog::test_cancel_already_terminal_returns_409
+  - id: LIF-005
+    description: Lifecycle error responses are sanitized (invariant — "didn't break")
+    test: tests/test_error_sanitization.py::TestErrorSanitization
+    invariant_of: [LIF-001, LIF-002, LIF-003, LIF-004]
 
 limits:
   - id: LIM-001
@@ -93,6 +107,7 @@ failure_modes:
   - id: FAIL-002
     description: Upstream failure during execution → 202 then failed UPSTREAM_FAILED
     test: tests/test_99_failure_modes.py::TestFailureModes::test_execution_failure_202_then_failed
+    pair_with: SAN-001
   - id: FAIL-003
     description: Upstream MCP error sanitized (no leak) → UPSTREAM_FAILED
     test: tests/test_99_failure_modes.py::TestFailureModes::test_mcp_error_sanitized_to_upstream_failed

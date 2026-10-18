@@ -1,0 +1,21 @@
+{
+  "name": "secure-mcp-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secure MCP Gateway RL Gym task — weighted partial-credit scoring pipeline",
+  "scripts": {
+    "generate": "python evaluation/scoring/pipeline.py generate",
+    "score": "python evaluation/scoring/pipeline.py score",
+    "check:mutants": "python evaluation/scoring/pipeline.py check:mutants",
+    "check:reference": "python evaluation/scoring/pipeline.py check:reference"
+  },
+  "keywords": [
+    "rl-gym",
+    "mcp",
+    "gateway",
+    "scoring",
+    "verifier",
+    "mutant-detection"
+  ],
+  "license": "MIT"
+}
