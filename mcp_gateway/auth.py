@@ -22,8 +22,10 @@ async def resolve_client(
     Raises AuthMissingError or AuthInvalidError on failure.
     """
     api_key = request.headers.get("x-api-key")
-    if api_key is None or api_key == "":
+    if api_key is None:
         raise AuthMissingError()
+    if api_key == "":
+        raise AuthInvalidError()
 
     resolved = config.client_for_api_key(api_key)
     if resolved is None:

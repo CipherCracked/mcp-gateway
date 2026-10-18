@@ -8,22 +8,23 @@ import os
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 import httpx
 
 from tests.conftest import (
     API_KEY_ADMIN, GATEWAY_URL, delay_documents,
-    wait_for_state,
+    wait_for_state, _kill_process_tree,
 )
 
 
 def _start_gateway():
     env = dict(os.environ)
-    env["PYTHONPATH"] = "/app"
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
     return subprocess.Popen(
         ["uvicorn", "mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"],
-        cwd="/app",
-        stdout=subprocess.PIPE,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         env=env,
     )
@@ -42,7 +43,7 @@ def _wait_ready(proc, timeout=20.0):
             )
             if r.status_code == 200:
                 return True
-        except (httpx.ConnectError, httpx.ReadTimeout):
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
             pass
         time.sleep(0.25)
     raise RuntimeError("gateway did not become ready after restart")
@@ -74,6 +75,7 @@ class TestPersistenceRecovery:
         time.sleep(0.5)
 
         # Restart the gateway.
+        _kill_process_tree(gateway_process.pid)
         gateway_process.terminate()
         try:
             gateway_process.wait(timeout=5)
@@ -103,3 +105,14 @@ class TestPersistenceRecovery:
                 new_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 new_proc.kill()
+
+            # Restart a gateway on port 8000 so subsequent tests (which use the
+            # session-scoped gateway_process fixture) still have a server to
+            # talk to. The session fixture's teardown will no-op on the already-
+            # dead original proc.
+            replacement = _start_gateway()
+            try:
+                _wait_ready(replacement)
+            except RuntimeError:
+                pass  # best effort; if it fails, downstream tests will too
+            # Leave replacement running for the rest of the session.

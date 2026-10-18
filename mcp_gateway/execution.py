@@ -22,15 +22,13 @@ from .errors import (
     UpstreamFailedError,
     UpstreamUnavailableError,
 )
-from .gateway import Gateway
+from .gateway import Gateway, parse_tool_name
 from .limits import ConcurrencyLimiter, RateLimiter
 from .persistence import ExecutionStore
 
 
 class ExecutionManager:
-    """Manages the execution state machine: submit → run → terminal.
-
-    Each execution is an asyncio.Task. Per-client semaphores enforce concurrency
+    """Each execution is an asyncio.Task. Per-client semaphores enforce concurrency
     limits. asyncio.wait_for enforces per-execution timeouts.
     """
 
@@ -132,10 +130,12 @@ class ExecutionManager:
                 execution_id, "running", updated_at=time.monotonic()
             )
 
-            # Execute with timeout
+            # Execute with timeout — call_upstream expects the bare tool name,
+            # so strip the server namespace prefix.
+            _, bare_tool_name = parse_tool_name(tool)
             try:
                 result = await asyncio.wait_for(
-                    self.gateway.call_upstream(server, tool, arguments),
+                    self.gateway.call_upstream(server, bare_tool_name, arguments),
                     timeout=self.config.execution_timeout_seconds,
                 )
             except asyncio.TimeoutError:

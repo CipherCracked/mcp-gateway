@@ -3,9 +3,14 @@
 SIGHUP reloads /app/config/gateway.yaml without restarting. After revoking a
 tool from a client's allowlist, new invocations get 403 and existing results
 become inaccessible. Other clients are unaffected.
+
+Skipped on Windows: SIGHUP is not available there.
 """
 
 import signal
+import sys
+
+import pytest
 
 from tests.conftest import (
     API_KEY_ADMIN, API_KEY_A, API_KEY_B,
@@ -26,6 +31,7 @@ def _write_config(content):
         f.write(content)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGHUP not available on Windows")
 class TestRevocation:
     def test_sighup_revokes_tool_for_new_invocations(
         self, client, auth_headers_admin, auth_headers_a, gateway_process

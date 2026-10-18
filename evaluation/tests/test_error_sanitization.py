@@ -77,3 +77,16 @@ class TestErrorSanitization:
         assert r.status_code == 413, r.text
         assert r.json()["code"] == "PAYLOAD_TOO_LARGE"
         self._assert_sanitized(r)
+
+    def test_unhandled_exception_sanitized(self, client, auth_headers_admin):
+        """Unhandled exceptions must be caught by the catch-all handler and
+        never leak stack traces to the client (REQ SAN-001)."""
+        r = client.post(
+            "/_test/raise_error",
+            headers=auth_headers_admin,
+        )
+        assert r.status_code == 500, r.text
+        self._assert_sanitized(r)
+        body = r.json()
+        assert "code" in body
+        assert "error" in body

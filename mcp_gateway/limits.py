@@ -15,25 +15,35 @@ import time
 
 
 class TokenBucket:
-    """Token bucket rate limiter for a single client."""
+    """Token bucket rate limiter for a single client.
+
+    Tokens refill continuously based on elapsed time at the configured refill
+    rate. During a rapid burst, very little time elapses between requests, so
+    very few tokens refill — which naturally rate-limits the burst. After the
+    burst, tokens refill at the sustained rate.
+    """
 
     def __init__(self, capacity: int, refill_per_second: float):
         self._capacity = capacity
         self._refill_per_second = refill_per_second
         self._tokens = float(capacity)
-        self._last_refill = time.monotonic()
+        now = time.monotonic()
+        self._last_refill = now
         self._lock = asyncio.Lock()
 
     async def consume(self) -> bool:
         """Attempt to consume one token. Returns True if allowed, False if rate limited."""
         async with self._lock:
             now = time.monotonic()
+
+            # Continuous refill based on elapsed time since last refill.
             elapsed = now - self._last_refill
             self._tokens = min(
                 self._capacity,
                 self._tokens + elapsed * self._refill_per_second,
             )
             self._last_refill = now
+
             if self._tokens >= 1.0:
                 self._tokens -= 1.0
                 return True
@@ -55,11 +65,14 @@ class ConcurrencyLimiter:
             if sem is None:
                 sem = asyncio.Semaphore(self._limit)
                 self._semaphores[client_id] = sem
-        try:
-            await asyncio.wait_for(sem.acquire(), timeout=0)
+        # Non-blocking try-acquire: asyncio.Semaphore.acquire() completes without
+        # yielding when a permit is available, so checking locked() then acquiring
+        # is race-free in the single-threaded event loop (no yield point between
+        # the check and the acquire).
+        if not sem.locked():
+            await sem.acquire()
             return True
-        except asyncio.TimeoutError:
-            return False
+        return False
 
     def release(self, client_id: str) -> None:
         """Release one slot for a client."""
@@ -70,6 +83,10 @@ class ConcurrencyLimiter:
             except ValueError:
                 # Semaphore already at max value; ignore
                 pass
+
+    def reset(self) -> None:
+        """Clear all semaphores (for test isolation)."""
+        self._semaphores.clear()
 
 
 class RateLimiter:
@@ -89,3 +106,8 @@ class RateLimiter:
                 bucket = TokenBucket(self._capacity, self._refill_per_second)
                 self._buckets[client_id] = bucket
         return await bucket.consume()
+
+    async def reset(self) -> None:
+        """Reset all buckets to full capacity (for test isolation)."""
+        async with self._lock:
+            self._buckets.clear()

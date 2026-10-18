@@ -3,10 +3,14 @@
 import asyncio
 import json
 import re
+import sys
 from typing import Any, Optional
 
+import anyio
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.shared.message import SessionMessage
+import mcp.types as types
 
 from .config import GatewayConfig
 from .errors import (
@@ -39,24 +43,93 @@ def parse_tool_name(tool: str) -> tuple[str, str]:
 
 
 class UpstreamClient:
-    """Manages an MCP client session to a single upstream server."""
+    """Manages an MCP client session to a single upstream server.
+
+    The upstream subprocess is spawned directly (via asyncio) so the gateway
+    retains a reference to the process and can detect crashes through
+    ``process.returncode`` for reliable liveness checks.
+    """
 
     def __init__(self, server_name: str, command: list[str]):
         self.server_name = server_name
         self.command = command
         self._session: Optional[ClientSession] = None
-        self._context = None
+        self._process: Optional[asyncio.subprocess.Process] = None
+        self._incoming_writer: Optional[MemoryObjectSendStream] = None
+        self._outgoing_reader: Optional[MemoryObjectReceiveStream] = None
+        self._pump_tasks: list[asyncio.Task] = []
         self._available_tools: dict[str, Any] = {}
 
     async def start(self):
         """Spawn the upstream server process and initialize the MCP session."""
-        params = StdioServerParameters(command=self.command[0], args=self.command[1:])
-        self._context = stdio_client(params)
-        read_stream, write_stream = await self._context.__aenter__()
-        self._session = ClientSession(read_stream, write_stream)
+        self._process = await asyncio.create_subprocess_exec(
+            self.command[0],
+            *self.command[1:],
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+        )
+
+        # Memory object streams carry MCP protocol messages between the pump
+        # tasks (which read/write subprocess pipes) and the ClientSession.
+        # A bounded buffer prevents the pump from blocking on a full stream
+        # while the session's receive loop is not yet draining it.
+        self._incoming_writer, incoming = anyio.create_memory_object_stream(100)
+        outgoing, self._outgoing_reader = anyio.create_memory_object_stream(100)
+
+        # Pump tasks must start BEFORE session initialization so that messages
+        # flowing in either direction (session → subprocess, subprocess →
+        # session) are forwarded as soon as they are produced.
+        self._pump_tasks = [
+            asyncio.create_task(self._pump_stdout()),
+            asyncio.create_task(self._pump_stdin()),
+        ]
+
+        self._session = ClientSession(incoming, outgoing)
+        # BaseSession.__aenter__ starts the _receive_loop task that routes
+        # incoming responses to pending send_request() futures. Without it,
+        # initialize() writes its request but never receives the response — a
+        # deadlock. We enter the session manually here and keep it open for
+        # the client's lifetime; __aexit__ is called from close().
+        await self._session.__aenter__()
         await self._session.initialize()
         tools_response = await self._session.list_tools()
         self._available_tools = {t.name: t for t in tools_response.tools}
+
+    async def _pump_stdout(self):
+        """Read JSON-RPC lines from subprocess stdout, push to the session."""
+        assert self._process is not None and self._process.stdout is not None
+        assert self._incoming_writer is not None
+        try:
+            async with self._incoming_writer:
+                while True:
+                    line = await self._process.stdout.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        message = types.JSONRPCMessage.model_validate_json(line)
+                    except Exception:
+                        continue
+                    await self._incoming_writer.send(SessionMessage(message))
+        except Exception:
+            pass
+
+    async def _pump_stdin(self):
+        """Read session messages from the memory stream, write to subprocess stdin."""
+        assert self._process is not None and self._process.stdin is not None
+        assert self._outgoing_reader is not None
+        try:
+            async with self._outgoing_reader:
+                async for message in self._outgoing_reader:
+                    payload = (
+                        message.message.model_dump_json(by_alias=True, exclude_none=True) + "\n"
+                    ).encode()
+                    self._process.stdin.write(payload)
+                    await self._process.stdin.drain()
+        except Exception:
+            pass
 
     def has_tool(self, tool_name: str) -> bool:
         return tool_name in self._available_tools
@@ -68,8 +141,12 @@ class UpstreamClient:
         return getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None) or {}
 
     def is_available(self) -> bool:
-        """Return True if the MCP session is active."""
-        return self._session is not None
+        """Return True if the MCP session is active and the upstream process is alive."""
+        return (
+            self._session is not None
+            and self._process is not None
+            and self._process.returncode is None
+        )
 
     async def call_tool(self, tool_name: str, arguments: dict) -> Any:
         """Call a tool on the upstream server. Returns parsed result.
@@ -85,33 +162,51 @@ class UpstreamClient:
         except UpstreamUnavailableError:
             raise
         except Exception as exc:
-            # Distinguish connection/process errors from application errors
+            # Distinguish connection/process errors from application errors.
             msg = str(exc).lower()
             if any(k in msg for k in ("closed", "eof", "connection", "broken pipe", "timeout")):
                 raise UpstreamUnavailableError(self.server_name) from exc
-            raise UpstreamFailedError(str(exc)) from exc
+            # Sanitized message: never leak upstream exception text to clients.
+            raise UpstreamFailedError("Upstream execution failed") from exc
 
-        # Extract text content from MCP result
+        # Extract text content from MCP result.
+        if result.isError:
+            raise UpstreamFailedError("Upstream execution failed")
+
         if result.content:
             for content in result.content:
                 text = getattr(content, "text", None)
                 if text is not None:
                     try:
-                        return json.loads(text)
+                        parsed = json.loads(text)
                     except (json.JSONDecodeError, TypeError):
                         return text
+                    # Detect upstream error payloads: a JSON object carrying an
+                    # "error" key signals a failed tool execution.
+                    if isinstance(parsed, dict) and "error" in parsed:
+                        raise UpstreamFailedError("Upstream execution failed")
+                    return parsed
         return {}
 
     async def close(self):
         """Close the MCP session and upstream process."""
         if self._session is not None:
             try:
-                await self._session.close()
+                await self._session.__aexit__(None, None, None)
             except Exception:
                 pass
-        if self._context is not None:
+        for task in self._pump_tasks:
+            task.cancel()
+        await asyncio.gather(*self._pump_tasks, return_exceptions=True)
+        if self._process is not None:
             try:
-                await self._context.__aexit__(None, None, None)
+                self._process.stdin.close()
+                await self._process.stdin.wait_closed()
+                await self._process.wait()
+            except Exception:
+                pass
+            try:
+                self._process.kill()
             except Exception:
                 pass
 
@@ -153,12 +248,16 @@ class Gateway:
     def resolve_tool(self, tool: str) -> tuple[str, str, UpstreamClient]:
         """Resolve a namespaced tool name to (server, tool_name, client).
 
-        Raises ToolNotFoundError if the tool doesn't exist or the server is unavailable.
+        Raises ToolNotFoundError if the server is unknown or the tool is missing
+        (404). Raises UpstreamUnavailableError if the server is known but dead
+        (502).
         """
         server, tool_name = parse_tool_name(tool)
         client = self._clients.get(server)
-        if client is None or not client.is_available():
+        if client is None:
             raise ToolNotFoundError(tool)
+        if not client.is_available():
+            raise UpstreamUnavailableError(server)
         if not client.has_tool(tool_name):
             raise ToolNotFoundError(tool)
         return server, tool_name, client
@@ -167,7 +266,7 @@ class Gateway:
         """Get the JSON Schema for a namespaced tool."""
         try:
             server, tool_name, client = self.resolve_tool(tool)
-        except ToolNotFoundError:
+        except (ToolNotFoundError, UpstreamUnavailableError):
             return None
         return client.get_tool_schema(tool_name)
 
@@ -182,4 +281,5 @@ class Gateway:
         client = self._clients.get(server_name)
         if client is None or not client.is_available():
             raise UpstreamUnavailableError(server_name)
-        return await client.call_tool(tool_name, arguments)
+        result = await client.call_tool(tool_name, arguments)
+        return result

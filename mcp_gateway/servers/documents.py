@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import sys
+import socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
@@ -69,9 +70,13 @@ class ControlHandler(BaseHTTPRequestHandler):
         pass  # Suppress stdout noise
 
 
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def start_control_port(port: int):
     """Start the HTTP control server on a daemon thread."""
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), ControlHandler)
+    httpd = _ReusableHTTPServer(("127.0.0.1", port), ControlHandler)
     thread = Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd
@@ -128,7 +133,7 @@ async def call_tool(name: str, arguments: dict):
         return [
             types.TextContent(
                 type="text",
-                content=json.dumps({"error": "Simulated MCP error from upstream"}),
+                text=json.dumps({"error": "Simulated MCP error from upstream"}),
             )
         ]
 
@@ -144,7 +149,7 @@ async def call_tool(name: str, arguments: dict):
             for i in range(1, min(limit, 5) + 1)
         ]
         return [
-            types.TextContent(type="text", content=json.dumps({"documents": docs}))
+            types.TextContent(type="text", text=json.dumps({"documents": docs}))
         ]
 
     elif name == "get_document":
@@ -152,7 +157,7 @@ async def call_tool(name: str, arguments: dict):
         return [
             types.TextContent(
                 type="text",
-                content=json.dumps(
+                text=json.dumps(
                     {"id": doc_id, "title": f"Document {doc_id}", "content": f"Content of {doc_id}"}
                 ),
             )

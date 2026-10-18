@@ -1,11 +1,12 @@
-"""Mutant MUT-NO-REVOCATION: SIGHUP does not reload configuration.
+"""Mutant MUT-NO-REVOCATION: SIGHUP does not reload config.
 
-Overlay this file onto mcp_gateway/main.py. Identical to the reference except
-the SIGHUP handler is removed, so revocation via config reload never takes
-effect. Expected to fail REV-001 and REV-002.
+This mutant's lifespan does not register the SIGHUP signal handler,
+so revocation via SIGHUP has no effect (REV-001, REV-002 fail).
 """
 
+import asyncio
 import json
+import signal
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -72,7 +73,8 @@ async def lifespan(app: FastAPI):
     )
     await _exec_manager.recover()
 
-    # MUTANT: no SIGHUP handler — config is never reloaded.
+    # MUTANT: SIGHUP handler not registered — revocation never takes effect
+
     yield
 
     await _gateway.stop()
@@ -87,17 +89,14 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 @app.middleware("http")
 async def request_size_middleware(request: Request, call_next):
     if _config is not None:
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                if int(content_length) > _config.request_max_bytes:
-                    return JSONResponse(
-                        status_code=413,
-                        content={"error": "Request body exceeds limit", "code": "PAYLOAD_TOO_LARGE"},
-                    )
-            except ValueError:
-                pass
-    return await call_next(request)
+        body = await request.body()
+        if len(body) > _config.request_max_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Request body exceeds limit", "code": "PAYLOAD_TOO_LARGE"},
+            )
+    response = await call_next(request)
+    return response
 
 
 async def _auth_client(request: Request) -> tuple[str, dict]:
@@ -180,25 +179,24 @@ def _validate_arguments(arguments: dict, schema: Optional[dict[str, Any]]) -> No
         raise InvalidArgsError(details)
 
 
-@app.get("/tools/list")
+@app.get("/tools/list", response_model=ToolListResponse)
 async def list_tools(request: Request):
     client_id, client_cfg = await _auth_client(request)
     allowed = list(client_cfg.get("allowlist", []))
     return ToolListResponse(tools=allowed)
 
 
-@app.post("/tools/call", status_code=202)
+@app.post("/tools/call", response_model=ToolCallResponse, status_code=202)
 async def call_tool(request: Request, body: ToolCallRequest):
     client_id, _ = await _auth_client(request)
     tool = body.tool
-    _check_tool_permission(client_id, tool)
 
     if _gateway is None:
         raise RuntimeError("Gateway not initialized")
-    try:
-        server, tool_name, _ = _gateway.resolve_tool(tool)
-    except ToolNotFoundError:
-        raise
+
+    server, tool_name, _ = _gateway.resolve_tool(tool)
+
+    _check_tool_permission(client_id, tool)
 
     schema = _gateway.get_tool_schema(tool)
     _validate_arguments(body.arguments, schema)
@@ -212,7 +210,7 @@ async def call_tool(request: Request, body: ToolCallRequest):
     return ToolCallResponse(execution_id=execution_id, state=state)
 
 
-@app.get("/executions/{execution_id}/status")
+@app.get("/executions/{execution_id}/status", response_model=ExecutionStatusResponse)
 async def execution_status(execution_id: str, request: Request):
     client_id, _ = await _auth_client(request)
 
@@ -221,7 +219,10 @@ async def execution_status(execution_id: str, request: Request):
     record = await _exec_manager.get_status(execution_id)
     _check_execution_permission(record, client_id)
 
-    response = ExecutionStatusResponse(execution_id=execution_id, state=record["state"])
+    response = ExecutionStatusResponse(
+        execution_id=execution_id,
+        state=record["state"],
+    )
     if record["state"] in ("failed", "cancelled"):
         response.error = {
             "code": record.get("error_code", "INTERNAL"),
@@ -230,7 +231,7 @@ async def execution_status(execution_id: str, request: Request):
     return response
 
 
-@app.post("/executions/{execution_id}/cancel")
+@app.post("/executions/{execution_id}/cancel", response_model=CancelResponse)
 async def cancel_execution(execution_id: str, request: Request):
     client_id, _ = await _auth_client(request)
 
@@ -245,7 +246,16 @@ async def cancel_execution(execution_id: str, request: Request):
     return CancelResponse(execution_id=execution_id, state=state)
 
 
-@app.get("/executions/{execution_id}/result")
+@app.post("/_test/reset_limiters")
+async def _test_reset_limiters():
+    if _rate_limiter is not None:
+        await _rate_limiter.reset()
+    if _concurrency_limiter is not None:
+        _concurrency_limiter.reset()
+    return {"ok": True}
+
+
+@app.get("/executions/{execution_id}/result", response_model=ExecutionResultResponse)
 async def execution_result(execution_id: str, request: Request):
     client_id, _ = await _auth_client(request)
 
@@ -253,7 +263,10 @@ async def execution_result(execution_id: str, request: Request):
         raise RuntimeError("Gateway not initialized")
     record = await _exec_manager.get_result(execution_id, client_id)
 
-    response = ExecutionResultResponse(execution_id=execution_id, state=record["state"])
+    response = ExecutionResultResponse(
+        execution_id=execution_id,
+        state=record["state"],
+    )
     if record["state"] == "completed":
         response.result = (
             json.loads(record["result"]) if record["result"] else None

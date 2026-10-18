@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import uuid as _uuid
+import socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
@@ -23,7 +24,8 @@ import mcp.types as types
 
 _control_state = {
     "fail_next_mode": None,   # "exception" | "mcp_error" | None
-    "delay_seconds": 0.0,
+    "delay_seconds": 0.0,     # seconds to delay the next N calls
+    "pending_delays": 0,      # how many calls remain to be delayed
 }
 
 
@@ -54,7 +56,14 @@ class ControlHandler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, ValueError):
                 data = {}
             seconds = float(data.get("seconds", 0))
-            _control_state["delay_seconds"] = seconds
+            if seconds > 0:
+                _control_state["delay_seconds"] = seconds
+                _control_state["pending_delays"] = _control_state.get("pending_delays", 0) + 1
+            else:
+                # seconds == 0 clears any queued delay state (used by test fixtures
+                # to reset control state between tests).
+                _control_state["delay_seconds"] = 0.0
+                _control_state["pending_delays"] = 0
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -74,9 +83,13 @@ class ControlHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def start_control_port(port: int):
     """Start the HTTP control server on a daemon thread."""
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), ControlHandler)
+    httpd = _ReusableHTTPServer(("127.0.0.1", port), ControlHandler)
     thread = Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd
@@ -123,9 +136,15 @@ async def list_tools():
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
-    delay = _control_state.pop("delay_seconds", 0.0)
-    if delay > 0:
-        await asyncio.sleep(delay)
+    # Apply queued delay before doing work
+    pending = _control_state.get("pending_delays", 0)
+    if pending > 0:
+        _control_state["pending_delays"] = pending - 1
+        delay = _control_state.get("delay_seconds", 0.0)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if _control_state["pending_delays"] == 0:
+            _control_state["delay_seconds"] = 0.0
 
     mode = _control_state.pop("fail_next_mode", None)
     if mode == "exception":
@@ -134,7 +153,7 @@ async def call_tool(name: str, arguments: dict):
         return [
             types.TextContent(
                 type="text",
-                content=json.dumps({"error": "Simulated MCP error from jobs upstream"}),
+                text=json.dumps({"error": "Simulated MCP error from jobs upstream"}),
             )
         ]
 
@@ -145,7 +164,7 @@ async def call_tool(name: str, arguments: dict):
         return [
             types.TextContent(
                 type="text",
-                content=json.dumps(
+                text=json.dumps(
                     {"job_id": job_id, "priority": priority, "payload_received": bool(payload)}
                 ),
             )
@@ -156,7 +175,7 @@ async def call_tool(name: str, arguments: dict):
         return [
             types.TextContent(
                 type="text",
-                content=json.dumps(
+                text=json.dumps(
                     {"job_id": job_id, "state": "completed", "result": {"status": "done"}}
                 ),
             )

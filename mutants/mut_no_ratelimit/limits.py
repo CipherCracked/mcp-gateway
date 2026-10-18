@@ -1,7 +1,7 @@
-"""Mutant MUT-NO-RATELIMIT: rate limiter always allows.
+"""Mutant MUT-NO-RATELIMIT: Rate limiter always allows.
 
-Overlay this file onto mcp_gateway/limits.py. RateLimiter.consume always
-returns True, so RATE_LIMITED is never raised. Expected to fail LIM-001.
+This mutant's TokenBucket.consume() always returns True, so LIM-001
+(rate limiting) fails.
 """
 
 import asyncio
@@ -9,15 +9,27 @@ import time
 
 
 class TokenBucket:
+    """Token bucket rate limiter for a single client (mutant: always allows)."""
+
     def __init__(self, capacity: int, refill_per_second: float):
         self._capacity = capacity
         self._refill_per_second = refill_per_second
+        self._tokens = float(capacity)
+        now = time.monotonic()
+        self._last_refill = now
+        self._lock = asyncio.Lock()
+
+    async def consume(self) -> bool:
+        # MUTANT: always consume, never rate limit
+        return True
 
 
 class ConcurrencyLimiter:
+    """Per-client asyncio semaphore for limiting concurrent executions."""
+
     def __init__(self, limit: int):
         self._limit = limit
-        self._semaphores = {}
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
         self._lock = asyncio.Lock()
 
     async def acquire(self, client_id: str) -> bool:
@@ -26,11 +38,10 @@ class ConcurrencyLimiter:
             if sem is None:
                 sem = asyncio.Semaphore(self._limit)
                 self._semaphores[client_id] = sem
-        try:
-            await asyncio.wait_for(sem.acquire(), timeout=0)
+        if not sem.locked():
+            await sem.acquire()
             return True
-        except asyncio.TimeoutError:
-            return False
+        return False
 
     def release(self, client_id: str) -> None:
         sem = self._semaphores.get(client_id)
@@ -40,14 +51,28 @@ class ConcurrencyLimiter:
             except ValueError:
                 pass
 
+    def reset(self) -> None:
+        self._semaphores.clear()
+
 
 class RateLimiter:
+    """Per-client token bucket rate limiter (mutant: always allows)."""
+
     def __init__(self, capacity: int, refill_per_second: float):
         self._capacity = capacity
         self._refill_per_second = refill_per_second
-        self._buckets = {}
+        self._buckets: dict[str, TokenBucket] = {}
         self._lock = asyncio.Lock()
 
     async def consume(self, client_id: str) -> bool:
-        # MUTANT: always allow — rate limiting disabled.
+        # MUTANT: always allow
+        async with self._lock:
+            bucket = self._buckets.get(client_id)
+            if bucket is None:
+                bucket = TokenBucket(self._capacity, self._refill_per_second)
+                self._buckets[client_id] = bucket
         return True
+
+    async def reset(self) -> None:
+        async with self._lock:
+            self._buckets.clear()

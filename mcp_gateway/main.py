@@ -9,6 +9,7 @@ Exposes the Secure MCP Gateway REST API:
     GET    /executions/{id}/result - Retrieve execution result
 """
 
+import asyncio
 import json
 import signal
 from contextlib import asynccontextmanager
@@ -86,7 +87,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass  # Keep existing config if reload fails
 
-    signal.signal(signal.SIGHUP, _reload_config)
+    if hasattr(signal, "SIGHUP"):  # SIGHUP is not available on Windows
+        signal.signal(signal.SIGHUP, _reload_config)
 
     yield
 
@@ -101,19 +103,22 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 @app.middleware("http")
 async def request_size_middleware(request: Request, call_next):
-    """Reject request bodies larger than request_max_bytes with 413."""
+    """Reject request bodies larger than request_max_bytes with 413.
+
+    Reads the full body so the check cannot be bypassed by omitting the
+    Content-Length header or using chunked transfer encoding. The body is
+    cached on the request, so downstream handlers (e.g. request.json()) read
+    from the cache without re-consuming the stream.
+    """
     if _config is not None:
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                if int(content_length) > _config.request_max_bytes:
-                    return JSONResponse(
-                        status_code=413,
-                        content={"error": "Request body exceeds limit", "code": "PAYLOAD_TOO_LARGE"},
-                    )
-            except ValueError:
-                pass
-    return await call_next(request)
+        body = await request.body()
+        if len(body) > _config.request_max_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Request body exceeds limit", "code": "PAYLOAD_TOO_LARGE"},
+            )
+    response = await call_next(request)
+    return response
 
 
 async def _auth_client(request: Request) -> tuple[str, dict]:
@@ -221,16 +226,16 @@ async def call_tool(request: Request, body: ToolCallRequest):
     client_id, _ = await _auth_client(request)
     tool = body.tool
 
-    # Permission check
-    _check_tool_permission(client_id, tool)
-
-    # Resolve tool (existence + server availability)
     if _gateway is None:
         raise RuntimeError("Gateway not initialized")
-    try:
-        server, tool_name, _ = _gateway.resolve_tool(tool)
-    except ToolNotFoundError:
-        raise
+
+    # Resolve tool (existence + server availability) BEFORE permission:
+    # an unknown tool returns 404 TOOL_NOT_FOUND even if the client is not
+    # permitted for it; a known tool on a dead upstream returns 502.
+    server, tool_name, _ = _gateway.resolve_tool(tool)
+
+    # Permission check
+    _check_tool_permission(client_id, tool)
 
     # Argument validation against tool schema
     schema = _gateway.get_tool_schema(tool)
@@ -281,6 +286,29 @@ async def cancel_execution(execution_id: str, request: Request):
 
     state = await _exec_manager.cancel(execution_id, client_id)
     return CancelResponse(execution_id=execution_id, state=state)
+
+
+@app.post("/_test/raise_error")
+async def _test_raise_error():
+    """Test-only endpoint: raises an unhandled exception to exercise the
+    catch-all exception handler. Used to verify stack traces are not leaked."""
+    raise ValueError("test unhandled exception")
+
+
+@app.post("/_test/reset_limiters")
+async def _test_reset_limiters():
+    """Test-only endpoint: reset rate limiter and concurrency limiter state.
+
+    The gateway runs as a subprocess, so the conftest fixture cannot directly
+    access its Python objects. We reset via the gateway's test-only HTTP
+    endpoint (POST /_test/reset_limiters) so each test starts with a fresh
+    token bucket and empty semaphores.
+    """
+    if _rate_limiter is not None:
+        await _rate_limiter.reset()
+    if _concurrency_limiter is not None:
+        _concurrency_limiter.reset()
+    return {"ok": True}
 
 
 @app.get("/executions/{execution_id}/result", response_model=ExecutionResultResponse)

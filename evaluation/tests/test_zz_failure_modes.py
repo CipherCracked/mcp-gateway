@@ -17,18 +17,6 @@ from tests.conftest import (
 
 
 class TestFailureModes:
-    def test_submission_failure_502_when_upstream_down(self, client, auth_headers_admin):
-        """Upstream unavailable BEFORE submission → 502 UPSTREAM_UNAVAILABLE."""
-        crash_jobs()
-        time.sleep(0.5)
-        r = client.post(
-            "/tools/call",
-            headers=auth_headers_admin,
-            json={"tool": "jobs.execute_job", "arguments": {"payload": {}}},
-        )
-        assert r.status_code == 502, r.text
-        assert r.json()["code"] == "UPSTREAM_UNAVAILABLE"
-
     def test_execution_failure_202_then_failed(self, client, auth_headers_admin):
         """Job accepted (202), upstream raises during execution → 202 then failed UPSTREAM_FAILED."""
         fail_next_jobs("exception")
@@ -59,3 +47,19 @@ class TestFailureModes:
         text = str(record["error"])
         assert "Simulated MCP error" not in text
         assert "traceback" not in text.lower()
+
+    def test_submission_failure_502_when_upstream_down(self, client, auth_headers_admin):
+        """Upstream unavailable BEFORE submission → 502 UPSTREAM_UNAVAILABLE.
+
+        Runs last within this file because crash_jobs() kills the jobs server,
+        which breaks subsequent fail_next_jobs() calls.
+        """
+        crash_jobs()
+        time.sleep(0.5)
+        r = client.post(
+            "/tools/call",
+            headers=auth_headers_admin,
+            json={"tool": "jobs.execute_job", "arguments": {"payload": {}}},
+        )
+        assert r.status_code == 502, r.text
+        assert r.json()["code"] == "UPSTREAM_UNAVAILABLE"

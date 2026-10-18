@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import time
+from pathlib import Path
 from typing import Callable
 
 import httpx
@@ -28,12 +29,25 @@ API_KEY_B = "key-b-456"
 BAD_KEY = "definitely-not-a-valid-key"
 
 
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all its descendants (Windows: taskkill /T)."""
+    try:
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def _control_post(base: str, path: str, payload: dict) -> httpx.Response:
     """POST to a fixture control endpoint. Crashes may drop the connection."""
     try:
         return httpx.post(f"{base}{path}", json=payload, timeout=2.0)
-    except (httpx.ConnectError, httpx.ReadTimeout):
-        # Expected for /_test/crash (os._exit kills the server mid-response).
+    except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ReadError):
+        # Expected for /_test/crash (os._exit kills the server mid-response,
+        # causing connection reset on Windows).
         return httpx.Response(0, text="control connection dropped")
 
 
@@ -61,12 +75,12 @@ def crash_jobs() -> httpx.Response:
 def gateway_process():
     """Start the gateway (uvicorn) once per session and tear it down at the end."""
     env = dict(os.environ)
-    env["PYTHONPATH"] = "/app"
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
     proc = subprocess.Popen(
         ["uvicorn", "mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"],
-        cwd="/app",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env=env,
     )
 
@@ -75,10 +89,12 @@ def gateway_process():
     while time.time() < deadline:
         if proc.poll() is not None:
             out, err = proc.communicate()
+            out_text = out.decode(errors="replace") if out is not None else "<no stdout (DEVNULL)>"
+            err_text = err.decode(errors="replace") if err is not None else ""
             raise RuntimeError(
                 f"Gateway exited early (code {proc.returncode}):\n"
-                f"stdout: {out.decode(errors='replace')}\n"
-                f"stderr: {err.decode(errors='replace')}"
+                f"stdout: {out_text}\n"
+                f"stderr: {err_text}"
             )
         try:
             r = httpx.get(
@@ -89,11 +105,12 @@ def gateway_process():
             if r.status_code == 200:
                 ready = True
                 break
-        except (httpx.ConnectError, httpx.ReadTimeout):
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
             pass
         time.sleep(0.25)
 
     if not ready:
+        _kill_process_tree(proc.pid)
         proc.terminate()
         try:
             proc.wait(timeout=5)
@@ -103,6 +120,7 @@ def gateway_process():
 
     yield proc
 
+    _kill_process_tree(proc.pid)
     proc.terminate()
     try:
         proc.wait(timeout=5)
@@ -130,6 +148,26 @@ def auth_headers_a():
 @pytest.fixture
 def auth_headers_b():
     return {"x-api-key": API_KEY_B}
+
+
+@pytest.fixture(autouse=True)
+def reset_limiters():
+    """Reset rate limiters and concurrency limiters before each test for isolation.
+
+    The gateway runs as a subprocess, so its limiter objects are not directly
+    accessible from the test process. We reset via the gateway's test-only
+    HTTP endpoint (POST /_test/reset_limiters) so each test starts with a fresh
+    token bucket and empty semaphores.
+    """
+    try:
+        httpx.post(f"{GATEWAY_URL}/_test/reset_limiters", timeout=2.0)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
+        pass  # Gateway not yet running; reset is a no-op
+    yield
+    try:
+        httpx.post(f"{GATEWAY_URL}/_test/reset_limiters", timeout=2.0)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
+        pass
 
 
 @pytest.fixture

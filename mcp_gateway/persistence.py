@@ -24,62 +24,43 @@ class ExecutionStore:
     def __init__(self, db_path: Path = DB_PATH):
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection: Optional[Any] = None
 
-    async def _connect(self):
-        if aiosqlite is not None:
-            return await aiosqlite.connect(str(self._db_path))
-        conn = sqlite3.connect(str(self._db_path))
-        return conn
+    async def _conn(self) -> Any:
+        """Get (or create) the persistent connection."""
+        if self._connection is None:
+            if aiosqlite is not None:
+                self._connection = await aiosqlite.connect(str(self._db_path))
+                await self._connection.execute("PRAGMA journal_mode=WAL")
+            else:
+                self._connection = sqlite3.connect(str(self._db_path))
+        return self._connection
 
     async def init_schema(self) -> None:
         """Create the executions table if it doesn't exist."""
-        conn = await self._connect()
+        conn = await self._conn()
         try:
-            if aiosqlite is not None:
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS executions (
-                        execution_id TEXT PRIMARY KEY,
-                        client_id TEXT NOT NULL,
-                        tool TEXT NOT NULL,
-                        server TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        arguments TEXT NOT NULL,
-                        result TEXT,
-                        error_code TEXT,
-                        error_message TEXT,
-                        owner_client_id TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
-                    )
-                    """
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS executions (
+                    execution_id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    server TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    arguments TEXT NOT NULL,
+                    result TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    owner_client_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
                 )
-                await conn.commit()
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS executions (
-                        execution_id TEXT PRIMARY KEY,
-                        client_id TEXT NOT NULL,
-                        tool TEXT NOT NULL,
-                        server TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        arguments TEXT NOT NULL,
-                        result TEXT,
-                        error_code TEXT,
-                        error_message TEXT,
-                        owner_client_id TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
-                    )
-                    """
-                )
-                conn.commit()
+                """
+            )
+            await conn.commit()
         finally:
-            if aiosqlite is not None:
-                await conn.close()
-            else:
-                conn.close()
+            pass  # Keep connection open
 
     async def create(
         self,
@@ -92,83 +73,47 @@ class ExecutionStore:
         created_at: float,
     ) -> None:
         """Insert a new execution in 'pending' state."""
-        conn = await self._connect()
+        conn = await self._conn()
         try:
-            if aiosqlite is not None:
-                await conn.execute(
-                    """
-                    INSERT INTO executions
-                    (execution_id, client_id, tool, server, state, arguments,
-                     result, error_code, error_message, owner_client_id,
-                     created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)
-                    """,
-                    (
-                        execution_id,
-                        client_id,
-                        tool,
-                        server,
-                        "pending",
-                        json.dumps(arguments),
-                        owner_client_id,
-                        created_at,
-                        created_at,
-                    ),
-                )
-                await conn.commit()
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO executions
-                    (execution_id, client_id, tool, server, state, arguments,
-                     result, error_code, error_message, owner_client_id,
-                     created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)
-                    """,
-                    (
-                        execution_id,
-                        client_id,
-                        tool,
-                        server,
-                        "pending",
-                        json.dumps(arguments),
-                        owner_client_id,
-                        created_at,
-                        created_at,
-                    ),
-                )
-                conn.commit()
+            await conn.execute(
+                """
+                INSERT INTO executions
+                (execution_id, client_id, tool, server, state, arguments,
+                 result, error_code, error_message, owner_client_id,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)
+                """,
+                (
+                    execution_id,
+                    client_id,
+                    tool,
+                    server,
+                    "pending",
+                    json.dumps(arguments),
+                    owner_client_id,
+                    created_at,
+                    created_at,
+                ),
+            )
+            await conn.commit()
         finally:
-            if aiosqlite is not None:
-                await conn.close()
-            else:
-                conn.close()
+            pass  # Keep connection open
 
     async def get(self, execution_id: str) -> Optional[dict[str, Any]]:
         """Fetch an execution record by ID. Returns None if not found."""
-        conn = await self._connect()
+        conn = await self._conn()
         try:
-            if aiosqlite is not None:
-                async with conn.execute(
-                    "SELECT * FROM executions WHERE execution_id = ?",
-                    (execution_id,),
-                ) as cursor:
-                    row = await cursor.fetchone()
-            else:
-                cursor = conn.execute(
-                    "SELECT * FROM executions WHERE execution_id = ?",
-                    (execution_id,),
-                )
-                row = cursor.fetchone()
+            async with conn.execute(
+                "SELECT * FROM executions WHERE execution_id = ?",
+                (execution_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
             if row is None:
                 return None
             columns = [desc[0] for desc in cursor.description]
             return dict(zip(columns, row))
         finally:
-            if aiosqlite is not None:
-                await conn.close()
-            else:
-                conn.close()
+            pass  # Keep connection open
 
     async def update_state(
         self,
@@ -183,65 +128,36 @@ class ExecutionStore:
         if updated_at is None:
             updated_at = time.monotonic()
 
-        conn = await self._connect()
+        conn = await self._conn()
         try:
-            if aiosqlite is not None:
-                cursor = await conn.execute(
-                    """
-                    UPDATE executions
-                    SET state = ?, result = ?, error_code = ?, error_message = ?, updated_at = ?
-                    WHERE execution_id = ?
-                    """,
-                    (
-                        state,
-                        json.dumps(result) if result is not None else None,
-                        error_code,
-                        error_message,
-                        updated_at,
-                        execution_id,
-                    ),
-                )
-                await conn.commit()
-                rowcount = cursor.rowcount
-            else:
-                cursor = conn.execute(
-                    """
-                    UPDATE executions
-                    SET state = ?, result = ?, error_code = ?, error_message = ?, updated_at = ?
-                    WHERE execution_id = ?
-                    """,
-                    (
-                        state,
-                        json.dumps(result) if result is not None else None,
-                        error_code,
-                        error_message,
-                        updated_at,
-                        execution_id,
-                    ),
-                )
-                conn.commit()
-                rowcount = cursor.rowcount
+            cursor = await conn.execute(
+                """
+                UPDATE executions
+                SET state = ?, result = ?, error_code = ?, error_message = ?, updated_at = ?
+                WHERE execution_id = ?
+                """,
+                (
+                    state,
+                    json.dumps(result) if result is not None else None,
+                    error_code,
+                    error_message,
+                    updated_at,
+                    execution_id,
+                ),
+            )
+            await conn.commit()
+            rowcount = cursor.rowcount
             return rowcount > 0
         finally:
-            if aiosqlite is not None:
-                await conn.close()
-            else:
-                conn.close()
+            pass  # Keep connection open
 
     async def list_all(self) -> list[dict[str, Any]]:
         """Fetch all execution records (used for restart recovery)."""
-        conn = await self._connect()
+        conn = await self._conn()
         try:
-            if aiosqlite is not None:
-                async with conn.execute("SELECT * FROM executions") as cursor:
-                    rows = await cursor.fetchall()
-            else:
-                cursor = conn.execute("SELECT * FROM executions")
-                rows = cursor.fetchall()
+            async with conn.execute("SELECT * FROM executions") as cursor:
+                rows = await cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]
             return [dict(zip(columns, row)) for row in rows]
         finally:
-            if aiosqlite is not None:
-                await conn.close()
-            else:
-                conn.close()
+            pass  # Keep connection open
