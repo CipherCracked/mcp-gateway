@@ -318,13 +318,13 @@ A client that was permitted when it submitted an execution may lose access to th
 
 The gateway launches MCP servers as child subprocesses via stdio. All components run in a single Docker container.
 
-### Documents Server (`python -m mcp_gateway.servers.documents`)
+### Documents Server (`python -m reference.mcp_gateway.servers.documents`)
 - **MCP Transport**: stdio (spawned by gateway)
 - Tools:
   - `search_documents(query: string, limit?: integer) → {documents: [{id, title, snippet}]}`
   - `get_document(id: string) → {id, title, content}`
 
-### Jobs Server (`python -m mcp_gateway.servers.jobs`)
+### Jobs Server (`python -m reference.mcp_gateway.servers.jobs`)
 - **MCP Transport**: stdio (spawned by gateway)
 - Tools:
   - `execute_job(payload: object, priority?: "low"|"normal"|"high") → {job_id: string}`
@@ -352,9 +352,9 @@ gateway:
 
 servers:
   documents:
-    command: ["python", "-m", "mcp_gateway.servers.documents"]
+    command: ["python", "-m", "reference.mcp_gateway.servers.documents"]
   jobs:
-    command: ["python", "-m", "mcp_gateway.servers.jobs"]
+    command: ["python", "-m", "reference.mcp_gateway.servers.jobs"]
 
 clients:
   client_a:
@@ -375,7 +375,7 @@ clients:
 Start the gateway with uvicorn:
 
 ```
-uvicorn mcp_gateway.main:app --host 0.0.0.0 --port 8000
+uvicorn reference.mcp_gateway.main:app --host 0.0.0.0 --port 8000
 ```
 
 The gateway reads configuration from `/app/config/gateway.yaml` at startup and spawns the two upstream MCP servers as child subprocesses.
@@ -387,21 +387,22 @@ The gateway reads configuration from `/app/config/gateway.yaml` at startup and s
 The following is one valid organization. You may structure files differently as long as all endpoints behave as specified.
 
 ```
-mcp_gateway/
-├── __init__.py
-├── main.py                 # FastAPI app, lifespan, routes
-├── config.py               # YAML config loading, validation
-├── auth.py                 # API key validation, client resolution
-├── gateway.py              # Core gateway logic (routing, upstream clients)
-├── execution.py            # ExecutionManager (state machine, persistence)
-├── persistence.py          # SQLite operations (aiosqlite)
-├── errors.py               # Custom exception classes + handlers
-├── limits.py               # Token bucket, semaphore management
-├── servers/
-│   ├── __init__.py
-│   ├── documents.py        # Documents MCP server (stdio)
-│   └── jobs.py             # Jobs MCP server (stdio)
-└── models.py               # Pydantic models for requests/responses
+reference/
+└── mcp_gateway/
+    ├── __init__.py
+    ├── main.py                 # FastAPI app, lifespan, routes
+    ├── config.py               # YAML config loading, validation
+    ├── auth.py                 # API key validation, client resolution
+    ├── gateway.py              # Core gateway logic (routing, upstream clients)
+    ├── execution.py            # ExecutionManager (state machine, persistence)
+    ├── persistence.py          # SQLite operations (aiosqlite)
+    ├── errors.py               # Custom exception classes + handlers
+    ├── limits.py               # Token bucket, semaphore management
+    ├── servers/
+    │   ├── __init__.py
+    │   ├── documents.py        # Documents MCP server (stdio)
+    │   └── jobs.py             # Jobs MCP server (stdio)
+    └── models.py               # Pydantic models for requests/responses
 ```
 
 ---

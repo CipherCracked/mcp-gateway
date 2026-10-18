@@ -15,9 +15,9 @@ gateway:
 
 servers:
   documents:
-    command: ["python", "-m", "mcp_gateway.servers.documents"]
+    command: ["python", "-m", "reference.mcp_gateway.servers.documents"]
   jobs:
-    command: ["python", "-m", "mcp_gateway.servers.jobs"]
+    command: ["python", "-m", "reference.mcp_gateway.servers.jobs"]
 
 clients:
   client_a:

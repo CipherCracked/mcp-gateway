@@ -34,7 +34,7 @@ MUTANT_TESTS = [
 
 def overlay(mutant_dir: str, filename: str):
     """Copy mutant file over source file."""
-    src = APP / "mcp_gateway" / filename
+    src = APP / "reference" / "mcp_gateway" / filename
     mutant = MUTANTS / mutant_dir / filename
     # Backup original
     backup = src.with_suffix(src.suffix + ".bak")
@@ -66,7 +66,7 @@ def run_tests(test_spec: str) -> tuple[int, str]:
 def main():
     results = {}
     for mutant_dir, filename, test_spec, min_failures in MUTANT_TESTS:
-        src = APP / "mcp_gateway" / filename
+        src = APP / "reference" / "mcp_gateway" / filename
         backup = overlay(mutant_dir, filename)
         try:
             print(f"\n{'='*60}")

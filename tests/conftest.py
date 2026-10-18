@@ -77,7 +77,7 @@ def gateway_process():
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
     proc = subprocess.Popen(
-        ["uvicorn", "mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"],
+        ["uvicorn", "reference.mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"],
         cwd=str(Path(__file__).resolve().parents[2]),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

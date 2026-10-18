@@ -12,6 +12,7 @@ FORBIDDEN_SUBSTRINGS = [
     "File \"",
     "/app/",
     "mcp_gateway",
+    "reference/mcp_gateway",
     "site-packages",
     "key-a-123",
     "key-b-456",
