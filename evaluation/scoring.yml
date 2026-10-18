@@ -24,11 +24,11 @@ check_groups:
   - name: authentication
     checks:
       - id: AUTH-001
-        weight: 0.04
+        weight: 0.05
       - id: AUTH-002
-        weight: 0.04
+        weight: 0.05
       - id: AUTH-003
-        weight: 0.04
+        weight: 0.02
   - name: authorization
     checks:
       - id: AUTHZ-001
@@ -40,15 +40,15 @@ check_groups:
   - name: discovery
     checks:
       - id: DISC-001
-        weight: 0.04
+        weight: 0.05
       - id: DISC-002
-        weight: 0.04
+        weight: 0.03
   - name: invocation
     checks:
       - id: INV-001
-        weight: 0.04
+        weight: 0.05
       - id: INV-002
-        weight: 0.04
+        weight: 0.03
   - name: validation
     checks:
       - id: VAL-001
@@ -56,35 +56,35 @@ check_groups:
       - id: VAL-002
         weight: 0.015
       - id: VAL-003
-        weight: 0.015
+        weight: 0.02
       - id: VAL-004
         weight: 0.015
       - id: VAL-005
-        weight: 0.01
+        weight: 0.015
       - id: VAL-006
         weight: 0.01
   - name: lifecycle
     checks:
       - id: LIF-001
-        weight: 0.02
+        weight: 0.025
       - id: LIF-002
-        weight: 0.02
+        weight: 0.025
       - id: LIF-003
-        weight: 0.02
+        weight: 0.015
       - id: LIF-004
-        weight: 0.02
+        weight: 0.015
       - id: LIF-005
-        weight: 0.02
+        weight: 0.01
   - name: limits
     checks:
       - id: LIM-001
-        weight: 0.025
+        weight: 0.03
       - id: LIM-002
-        weight: 0.025
+        weight: 0.03
       - id: LIM-003
-        weight: 0.025
+        weight: 0.02
       - id: LIM-004
-        weight: 0.025
+        weight: 0.02
   - name: failure_modes
     checks:
       - id: FAIL-001
@@ -96,9 +96,9 @@ check_groups:
   - name: persistence
     checks:
       - id: PERS-001
-        weight: 0.03
+        weight: 0.04
       - id: PERS-002
-        weight: 0.03
+        weight: 0.02
   - name: revocation
     checks:
       - id: REV-001
