@@ -204,6 +204,35 @@ def cmd_score(args) -> int:
 
     # Choose which code to score: reference (100% expected) or workspace (model output)
     target = getattr(args, "target", "workspace")
+    model = getattr(args, "model", None)
+    model_safe = (
+        model.replace("/", "_").replace(":", "_").replace("-", "_")
+        if model
+        else None
+    )
+
+    # For workspace scoring, copy the per-model workspace's mcp_gateway
+    # package into workspace/mcp_gateway/ so the existing module path
+    # (workspace.mcp_gateway.main:app) resolves to the model's code.
+    if target == "workspace":
+        if not model_safe:
+            print(
+                "[FAIL] --model is required when scoring workspace target.",
+                file=sys.stderr,
+            )
+            return 1
+        model_workspace = APP / "workspace" / model_safe / "mcp_gateway"
+        target_workspace = APP / "workspace" / "mcp_gateway"
+        if not model_workspace.exists():
+            print(
+                f"[FAIL] Model workspace not found: {model_workspace}",
+                file=sys.stderr,
+            )
+            return 1
+        if target_workspace.exists():
+            shutil.rmtree(target_workspace)
+        shutil.copytree(model_workspace, target_workspace)
+
     gateway_module = (
         "reference.mcp_gateway.main:app"
         if target == "reference"
@@ -331,11 +360,12 @@ def cmd_check_mutants() -> int:
 def cmd_generate(args) -> int:
     """Generate a solution by running OpenHands headless.
 
-    Copies task/public/ to a fresh workspace, runs OpenHands headless
-    seeded with task/instruction.md using the configured frontier model,
-    and saves logs to evaluation/proof-of-work/<model-name>/.
+    Copies task/public/ to a per-model workspace under
+    workspace/<model-name>/, builds the Docker sandbox image, and runs
+    OpenHands headless INSIDE the container with only /workspace mounted —
+    the agent never sees evaluation/ or reference/.
 
-    The agent never sees evaluation/ or reference/.
+    Saves logs to evaluation/proof-of-work/<model-name>/run.log.
     """
     model = (
         args.model
@@ -347,8 +377,11 @@ def cmd_generate(args) -> int:
     proof_dir = EVAL / "proof-of-work" / model_safe
     proof_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fresh workspace from public materials only (never reference/ or evaluation/)
-    workspace = APP / "workspace"
+    # Fresh per-model workspace from public materials only (never reference/
+    # or evaluation/). Each model gets its own workspace so runs don't
+    # overwrite each other. Lives at workspace/<model-name>/ at repo root so
+    # the scoring step can import workspace.mcp_gateway.main:app.
+    workspace = APP / "workspace" / model_safe
     if workspace.exists():
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -361,14 +394,30 @@ def cmd_generate(args) -> int:
             else:
                 shutil.copy2(item, workspace / item.name)
 
-    # Build the Docker sandbox image
+    # Copy the task instruction into the workspace so it's available inside
+    # the container at /workspace/task/instruction.md.
+    instruction_src = APP / "task" / "instruction.md"
+    instruction_dst = workspace / "task" / "instruction.md"
+    if instruction_src.exists():
+        instruction_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(instruction_src, instruction_dst)
+
+    # Build the Docker sandbox image (run docker directly to avoid Git
+    # Bash path issues with Windows drive letters on this machine).
     print("Building Docker sandbox image...")
     build_proc = subprocess.run(
-        ["bash", str(APP / "app-setup" / "build.sh")],
-        cwd=str(APP),
+        [
+            "docker", "build",
+            "--tag", "secure-mcp-gateway:latest",
+            "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
+            ".",
+        ],
+        cwd=str(APP).replace("\\", "/"),
         capture_output=True,
         text=True,
-        timeout=300,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
     )
     print(build_proc.stdout)
     if build_proc.returncode != 0:
@@ -376,22 +425,11 @@ def cmd_generate(args) -> int:
         print("[FAIL] Docker build failed")
         return 1
 
-    # Locate the OpenHands CLI binary
-    oh_bin = shutil.which("openhands")
-    if not oh_bin:
-        candidate = Path("C:/Users/USER/.local/bin/openhands")
-        if candidate.exists():
-            oh_bin = str(candidate)
-    if not oh_bin:
-        print("[FAIL] OpenHands CLI not found", file=sys.stderr)
-        return 1
-
-    # OpenHands needs LLM_API_KEY + LLM_MODEL via env overrides
-    env = os.environ.copy()
-    env["LLM_MODEL"] = model
-    env["LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
-
-    if not env.get("LLM_API_KEY"):
+    # OpenHands needs LLM_API_KEY + LLM_MODEL via env overrides.
+    # TTY_INTERACTIVE/TTY_COMPATIBLE force Rich to use a plain console so
+    # emoji/unicode output doesn't break on cp1252.
+    llm_api_key = os.environ.get("LLM_API_KEY")
+    if not llm_api_key:
         print(
             "[FAIL] LLM_API_KEY environment variable is not set. "
             "Set it before running npm run generate.",
@@ -399,15 +437,28 @@ def cmd_generate(args) -> int:
         )
         return 1
 
-    # Run OpenHands headless, seeded with the task instruction
+    # Run OpenHands headless INSIDE the Docker container with only /workspace
+    # mounted. The agent cannot reach reference/ or evaluation/ from in there.
     log_file = proof_dir / "run.log"
+    workspace_host = str(workspace).replace("\\", "/")
+
     cmd = [
-        oh_bin,
+        "docker", "run", "--rm",
+        "-v", f"{workspace_host}:/workspace",
+        "-w", "/workspace",
+        "-e", f"LLM_MODEL={model}",
+        "-e", f"LLM_API_KEY={llm_api_key}",
+        "-e", "LLM_BASE_URL=https://openrouter.ai/api/v1",
+        "-e", "TTY_INTERACTIVE=1",
+        "-e", "TTY_COMPATIBLE=1",
+        "-e", "PYTHONIOENCODING=utf-8",
+        "secure-mcp-gateway:latest",
+        "openhands",
         "--headless",
         "--json",
         "--override-with-envs",
         "--always-approve",
-        "-f", str(APP / "task" / "instruction.md"),
+        "-f", "/workspace/task/instruction.md",
     ]
 
     print(f"Running OpenHands headless with model: {model}")
@@ -417,8 +468,7 @@ def cmd_generate(args) -> int:
     with open(log_file, "w", encoding="utf-8") as lf:
         proc = subprocess.run(
             cmd,
-            cwd=str(workspace),
-            env=env,
+            cwd=str(APP),
             stdout=lf,
             stderr=subprocess.STDOUT,
             text=True,
@@ -459,6 +509,11 @@ def main() -> int:
         choices=["reference", "workspace"],
         default="workspace",
         help="Which code to score: 'reference' (must pass 100%%) or 'workspace' (model output)",
+    )
+    score_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model name (used to locate workspace/<model>/mcp_gateway for scoring)",
     )
     subparsers.add_parser(
         "check:reference", help="Run reference validation (must pass 100%%)"

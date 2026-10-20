@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -7,19 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies
+# Python dependencies (gateway runtime + tests)
 COPY environment/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Application code
-COPY reference/mcp_gateway ./mcp_gateway
+# OpenHands CLI + SDK for the agent sandbox (installed here so the agent runs
+# inside the container with no access to the host filesystem except /workspace).
+RUN pip install --no-cache-dir openhands==1.16.0
 
-# Default runtime config (the evaluation harness may replace this)
-COPY environment/config/gateway.yaml /app/config/gateway.yaml
-
-# Runtime directories
-RUN mkdir -p /app/data
+# Agent workspace — the only host directory mounted into this container.
+RUN mkdir -p /workspace
 
 EXPOSE 8000
-
-CMD ["uvicorn", "reference.mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
