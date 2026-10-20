@@ -358,19 +358,50 @@ def cmd_check_mutants() -> int:
     return 0
 
 
-def _build_image(max_retries: int = 3, backoff_seconds: int = 30,
-                 timeout_seconds: int = 1800) -> int:
+SANDBOX_IMAGE = "secure-mcp-gateway:sandbox"
+SANDBOX_CONTAINER = "secure-mcp-gateway-sandbox"
+
+
+def _ensure_openhands_installed() -> int:
+    """Ensure openhands-sdk is importable in the host Python environment.
+
+    The OpenHands SDK runs on the host (not in Docker), so it must be
+    installed in the host venv. This is a one-time pip install — no PyPI
+    access is needed inside Docker anymore.
+    """
+    try:
+        import openhands.sdk  # noqa: F401
+        return 0
+    except ImportError:
+        pass
+
+    print("openhands-sdk not found in host Python; installing (one-time)...")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-cache-dir", "openhands-sdk==1.21.0"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600,
+    )
+    print(proc.stdout)
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        print("[FAIL] Failed to install openhands-sdk on host")
+        return 1
+    print("openhands-sdk installed successfully.")
+    return 0
+
+
+def _build_image(max_retries: int = 3, backoff_seconds: int = 10,
+                 timeout_seconds: int = 300) -> int:
     """Build the Docker sandbox image with retries and backoff.
 
-    The PyPI download of openhands-sdk (and its transitive deps such as
-    litellm) can take well over 10 minutes on a slow connection, so the
-    default subprocess timeout is raised to 1800s (30 min) and the build
-    is retried with linear backoff on failure.
+    The sandbox image is minimal — just Python + curl. No PyPI installs
+    (no openhands-sdk, no litellm), so builds should complete in seconds
+    rather than timing out on slow PyPI connections.
     """
     build_cmd = [
         "docker", "build",
-        "--tag", "secure-mcp-gateway:latest",
-        "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
+        "--tag", SANDBOX_IMAGE,
+        "--file", str(APP / "environment" / "Dockerfile.sandbox").replace("\\", "/"),
         ".",
     ]
 
@@ -387,7 +418,7 @@ def _build_image(max_retries: int = 3, backoff_seconds: int = 30,
         )
         print(build_proc.stdout)
         if build_proc.returncode == 0:
-            print("Docker image built successfully.")
+            print("Docker sandbox image built successfully.")
             return 0
         print(build_proc.stderr, file=sys.stderr)
         if attempt < max_retries:
@@ -401,11 +432,61 @@ def _build_image(max_retries: int = 3, backoff_seconds: int = 30,
 def _image_exists() -> bool:
     """Return True if the sandbox image is already built locally."""
     proc = subprocess.run(
-        ["docker", "image", "inspect", "secure-mcp-gateway:latest"],
+        ["docker", "image", "inspect", SANDBOX_IMAGE],
         capture_output=True,
         text=True,
     )
     return proc.returncode == 0
+
+
+def _start_container(workspace_host: str) -> bool:
+    """Start the sandbox container (detached) with the workspace mounted.
+
+    Returns True on success, False on failure.
+    """
+    # Remove any leftover container from a previous run.
+    subprocess.run(
+        ["docker", "rm", "-f", SANDBOX_CONTAINER],
+        capture_output=True, text=True,
+    )
+
+    proc = subprocess.run(
+        [
+            "docker", "run", "-d",
+            "--name", SANDBOX_CONTAINER,
+            "-v", f"{workspace_host}:/workspace",
+            "-w", "/workspace",
+            SANDBOX_IMAGE,
+            "sleep", "infinity",
+        ],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        print("[FAIL] Failed to start sandbox container.")
+        return False
+
+    # Wait for the container to be ready.
+    for _ in range(20):
+        check = subprocess.run(
+            ["docker", "exec", SANDBOX_CONTAINER, "echo", "ready"],
+            capture_output=True, text=True,
+        )
+        if check.returncode == 0:
+            print(f"Sandbox container '{SANDBOX_CONTAINER}' is ready.")
+            return True
+        time.sleep(0.5)
+
+    print("[FAIL] Sandbox container did not become ready in time.")
+    return False
+
+
+def _stop_container() -> None:
+    """Stop and remove the sandbox container."""
+    subprocess.run(
+        ["docker", "rm", "-f", SANDBOX_CONTAINER],
+        capture_output=True, text=True,
+    )
 
 
 def cmd_build(args) -> int:
@@ -414,16 +495,14 @@ def cmd_build(args) -> int:
 
 
 def cmd_generate(args) -> int:
-    """Generate a solution by running OpenHands headless.
+    """Generate a solution by running OpenHands headless on the host.
 
     Copies task/public/ to a per-model workspace under
-    workspace/<model-name>/, then runs OpenHands SDK INSIDE the Docker
-    sandbox with only /workspace mounted — the agent never sees
-    evaluation/ or reference/.
-
-    The Docker sandbox image is built automatically (with retries and
-    backoff) if it is not already present locally; pass --no-build to
-    require a pre-built image instead.
+    workspace/<model-name>/, starts a Docker sandbox container with only
+    /workspace mounted, then runs the OpenHands SDK agent on the host.
+    The agent's file tools read/write the mounted workspace, and its
+    shell commands execute inside the container via ``docker exec``.
+    The agent never sees evaluation/ or reference/.
 
     Saves logs to evaluation/proof-of-work/<model-name>/run.log.
     """
@@ -442,8 +521,20 @@ def cmd_generate(args) -> int:
     # overwrite each other. Lives at workspace/<model-name>/ at repo root so
     # the scoring step can import workspace.mcp_gateway.main:app.
     workspace = APP / "workspace" / model_safe
+
+    # Stop any leftover sandbox container from a previous run so the host
+    # can clean up the workspace directory (Docker volume mount locks files
+    # on Windows).
+    _stop_container()
+
     if workspace.exists():
-        shutil.rmtree(workspace)
+        try:
+            shutil.rmtree(workspace)
+        except PermissionError:
+            # Docker Desktop on Windows may hold file locks on mounted
+            # volumes even after the container stops. Proceed anyway;
+            # the copy step will overwrite existing files.
+            print(f"[WARN] Could not remove {workspace} (file in use). Overwriting existing files instead.")
     workspace.mkdir(parents=True, exist_ok=True)
 
     public = APP / "task" / "public"
@@ -454,42 +545,43 @@ def cmd_generate(args) -> int:
             else:
                 shutil.copy2(item, workspace / item.name)
 
-    # Copy the task instruction into the workspace so it's available inside
-    # the container at /workspace/task/instruction.md.
+    # Copy the task instruction into the workspace so it's available at
+    # /workspace/task/instruction.md inside the container (and on the host).
     instruction_src = APP / "task" / "instruction.md"
     instruction_dst = workspace / "task" / "instruction.md"
     if instruction_src.exists():
         instruction_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(instruction_src, instruction_dst)
 
-    # Copy the OpenHands SDK driver script into the workspace so it's available
-    # inside the container at /workspace/run_agent.py. We use the SDK (not the
-    # full openhands CLI) to avoid pulling browser-use / playwright.
+    # Copy the OpenHands SDK driver script into the workspace. It runs on
+    # the host, not inside the container.
     driver_src = APP / "evaluation" / "scoring" / "run_agent.py"
     driver_dst = workspace / "run_agent.py"
     if driver_src.exists():
         shutil.copy2(driver_src, driver_dst)
 
+    # Ensure openhands-sdk is available on the host (one-time pip install).
+    rc = _ensure_openhands_installed()
+    if rc != 0:
+        return rc
+
     # Ensure the Docker sandbox image exists. Build it automatically if
-    # missing (with retries + backoff, since PyPI downloads can be slow),
-    # unless --no-build is passed.
+    # missing (fast — no PyPI installs), unless --no-build is passed.
     if not args.no_build:
         if not _image_exists():
-            print("Docker image not found locally; building it now (this may take several minutes)...")
+            print("Docker sandbox image not found locally; building it now...")
             rc = _build_image()
             if rc != 0:
                 return rc
         else:
-            print("Docker image 'secure-mcp-gateway:latest' already present; skipping build.")
+            print(f"Docker image '{SANDBOX_IMAGE}' already present; skipping build.")
     else:
         if not _image_exists():
-            print("[FAIL] Docker image 'secure-mcp-gateway:latest' not found locally "
+            print(f"[FAIL] Docker image '{SANDBOX_IMAGE}' not found locally "
                   "and --no-build was passed.")
             return 1
 
     # OpenHands needs LLM_API_KEY + LLM_MODEL via env overrides.
-    # TTY_INTERACTIVE/TTY_COMPATIBLE force Rich to use a plain console so
-    # emoji/unicode output doesn't break on cp1252.
     llm_api_key = os.environ.get("LLM_API_KEY")
     if not llm_api_key:
         print(
@@ -499,38 +591,40 @@ def cmd_generate(args) -> int:
         )
         return 1
 
-    # Run OpenHands headless INSIDE the Docker container with only /workspace
-    # mounted. The agent cannot reach reference/ or evaluation/ from in there.
-    log_file = proof_dir / "run.log"
+    # Start the sandbox container, run the agent on the host, then clean up.
     workspace_host = str(workspace).replace("\\", "/")
+    log_file = proof_dir / "run.log"
 
-    cmd = [
-        "docker", "run", "--rm",
-        "-v", f"{workspace_host}:/workspace",
-        "-w", "/workspace",
-        "-e", f"LLM_MODEL={model}",
-        "-e", f"LLM_API_KEY={llm_api_key}",
-        "-e", "LLM_BASE_URL=https://openrouter.ai/api/v1",
-        "-e", "TTY_INTERACTIVE=1",
-        "-e", "TTY_COMPATIBLE=1",
-        "-e", "PYTHONIOENCODING=utf-8",
-        "secure-mcp-gateway:latest",
-        "python", "/workspace/run_agent.py",
-    ]
+    if not _start_container(workspace_host):
+        return 1
 
-    print(f"Running OpenHands headless with model: {model}")
-    print(f"Workspace: {workspace}")
-    print(f"Log file: {log_file}")
+    try:
+        agent_env = os.environ.copy()
+        agent_env["LLM_MODEL"] = model
+        agent_env["LLM_API_KEY"] = llm_api_key
+        agent_env["LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
+        agent_env["SANDBOX_CONTAINER"] = SANDBOX_CONTAINER
+        agent_env["WORKSPACE_HOST"] = str(workspace)
+        agent_env["TTY_INTERACTIVE"] = "1"
+        agent_env["TTY_COMPATIBLE"] = "1"
+        agent_env["PYTHONIOENCODING"] = "utf-8"
 
-    with open(log_file, "w", encoding="utf-8") as lf:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(APP),
-            stdout=lf,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=600,
-        )
+        print(f"Running OpenHands headless with model: {model}")
+        print(f"Workspace: {workspace}")
+        print(f"Sandbox container: {SANDBOX_CONTAINER}")
+        print(f"Log file: {log_file}")
+
+        with open(log_file, "w", encoding="utf-8") as lf:
+            proc = subprocess.run(
+                [sys.executable, str(workspace / "run_agent.py")],
+                cwd=str(workspace),
+                env=agent_env,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+    finally:
+        _stop_container()
 
     if proc.returncode != 0:
         print(f"[FAIL] OpenHands exited with code {proc.returncode}. See {log_file}")
