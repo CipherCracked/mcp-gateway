@@ -4,6 +4,7 @@
   "private": true,
   "description": "Secure MCP Gateway RL Gym task — weighted partial-credit scoring pipeline",
   "scripts": {
+    "build": ".venv\\Scripts\\python.exe evaluation/scoring/pipeline.py build",
     "generate": ".venv\\Scripts\\python.exe evaluation/scoring/pipeline.py generate",
     "score": ".venv\\Scripts\\python.exe evaluation/scoring/pipeline.py score",
     "check:mutants": ".venv\\Scripts\\python.exe evaluation/scoring/pipeline.py check:mutants",

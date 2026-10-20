@@ -357,13 +357,57 @@ def cmd_check_mutants() -> int:
     return 0
 
 
+def _build_image() -> int:
+    """Build the Docker sandbox image. Returns 0 on success, 1 on failure."""
+    print("Building Docker sandbox image...")
+    build_proc = subprocess.run(
+        [
+            "docker", "build",
+            "--tag", "secure-mcp-gateway:latest",
+            "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
+            ".",
+        ],
+        cwd=str(APP).replace("\\", "/"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+    )
+    print(build_proc.stdout)
+    if build_proc.returncode != 0:
+        print(build_proc.stderr, file=sys.stderr)
+        print("[FAIL] Docker build failed")
+        return 1
+    print("Docker image built successfully.")
+    return 0
+
+
+def _image_exists() -> bool:
+    """Return True if the sandbox image is already built locally."""
+    proc = subprocess.run(
+        ["docker", "image", "inspect", "secure-mcp-gateway:latest"],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def cmd_build(args) -> int:
+    """Build the Docker sandbox image (separate from agent generation)."""
+    return _build_image()
+
+
 def cmd_generate(args) -> int:
     """Generate a solution by running OpenHands headless.
 
     Copies task/public/ to a per-model workspace under
-    workspace/<model-name>/, builds the Docker sandbox image, and runs
-    OpenHands headless INSIDE the container with only /workspace mounted —
-    the agent never sees evaluation/ or reference/.
+    workspace/<model-name>/, then runs OpenHands SDK INSIDE the Docker
+    sandbox with only /workspace mounted — the agent never sees
+    evaluation/ or reference/.
+
+    Assumes the Docker sandbox image is already built (run ``npm run build``
+    first, or pass --build to build it here).
 
     Saves logs to evaluation/proof-of-work/<model-name>/run.log.
     """
@@ -410,27 +454,15 @@ def cmd_generate(args) -> int:
     if driver_src.exists():
         shutil.copy2(driver_src, driver_dst)
 
-    # Build the Docker sandbox image (run docker directly to avoid Git
-    # Bash path issues with Windows drive letters on this machine).
-    print("Building Docker sandbox image...")
-    build_proc = subprocess.run(
-        [
-            "docker", "build",
-            "--tag", "secure-mcp-gateway:latest",
-            "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
-            ".",
-        ],
-        cwd=str(APP).replace("\\", "/"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=600,
-    )
-    print(build_proc.stdout)
-    if build_proc.returncode != 0:
-        print(build_proc.stderr, file=sys.stderr)
-        print("[FAIL] Docker build failed")
+    # Ensure the Docker sandbox image exists. Build only when --build is
+    # passed; otherwise require it to already be built (npm run build).
+    if args.build:
+        rc = _build_image()
+        if rc != 0:
+            return rc
+    elif not _image_exists():
+        print("[FAIL] Docker image 'secure-mcp-gateway:latest' not found locally.")
+        print("       Run 'npm run build' first, or pass --build to build now.")
         return 1
 
     # OpenHands needs LLM_API_KEY + LLM_MODEL via env overrides.
@@ -504,6 +536,14 @@ def main() -> int:
         default=None,
         help="Model to use for generation (overrides OH_MODEL env var)",
     )
+    generate_parser.add_argument(
+        "--build",
+        action="store_true",
+        help="Build the Docker sandbox image before generating (default: require it to already exist)",
+    )
+    subparsers.add_parser(
+        "build", help="Build the Docker sandbox image (separate from generation)"
+    )
     score_parser = subparsers.add_parser(
         "score", help="Run the full weighted scoring pipeline"
     )
@@ -527,6 +567,8 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    if args.command == "build":
+        return cmd_build(args)
     if args.command == "generate":
         return cmd_generate(args)
     if args.command == "score":
