@@ -402,6 +402,14 @@ def cmd_generate(args) -> int:
         instruction_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(instruction_src, instruction_dst)
 
+    # Copy the OpenHands SDK driver script into the workspace so it's available
+    # inside the container at /workspace/run_agent.py. We use the SDK (not the
+    # full openhands CLI) to avoid pulling browser-use / playwright.
+    driver_src = APP / "evaluation" / "scoring" / "run_agent.py"
+    driver_dst = workspace / "run_agent.py"
+    if driver_src.exists():
+        shutil.copy2(driver_src, driver_dst)
+
     # Build the Docker sandbox image (run docker directly to avoid Git
     # Bash path issues with Windows drive letters on this machine).
     print("Building Docker sandbox image...")
@@ -453,12 +461,7 @@ def cmd_generate(args) -> int:
         "-e", "TTY_COMPATIBLE=1",
         "-e", "PYTHONIOENCODING=utf-8",
         "secure-mcp-gateway:latest",
-        "openhands",
-        "--headless",
-        "--json",
-        "--override-with-envs",
-        "--always-approve",
-        "-f", "/workspace/task/instruction.md",
+        "python", "/workspace/run_agent.py",
     ]
 
     print(f"Running OpenHands headless with model: {model}")

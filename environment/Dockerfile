@@ -11,9 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY environment/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# OpenHands CLI + SDK for the agent sandbox (installed here so the agent runs
+# OpenHands SDK for the agent sandbox (installed here so the agent runs
 # inside the container with no access to the host filesystem except /workspace).
-RUN pip install --no-cache-dir openhands==1.16.0
+# openhands-sdk (not full openhands CLI) avoids pulling browser-use/playwright.
+RUN pip install --no-cache-dir openhands-sdk==1.21.0
 
 # Agent workspace — the only host directory mounted into this container.
 RUN mkdir -p /workspace
