@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -357,30 +358,44 @@ def cmd_check_mutants() -> int:
     return 0
 
 
-def _build_image() -> int:
-    """Build the Docker sandbox image. Returns 0 on success, 1 on failure."""
-    print("Building Docker sandbox image...")
-    build_proc = subprocess.run(
-        [
-            "docker", "build",
-            "--tag", "secure-mcp-gateway:latest",
-            "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
-            ".",
-        ],
-        cwd=str(APP).replace("\\", "/"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=600,
-    )
-    print(build_proc.stdout)
-    if build_proc.returncode != 0:
+def _build_image(max_retries: int = 3, backoff_seconds: int = 30,
+                 timeout_seconds: int = 1800) -> int:
+    """Build the Docker sandbox image with retries and backoff.
+
+    The PyPI download of openhands-sdk (and its transitive deps such as
+    litellm) can take well over 10 minutes on a slow connection, so the
+    default subprocess timeout is raised to 1800s (30 min) and the build
+    is retried with linear backoff on failure.
+    """
+    build_cmd = [
+        "docker", "build",
+        "--tag", "secure-mcp-gateway:latest",
+        "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
+        ".",
+    ]
+
+    for attempt in range(1, max_retries + 1):
+        print(f"Building Docker sandbox image (attempt {attempt}/{max_retries})...")
+        build_proc = subprocess.run(
+            build_cmd,
+            cwd=str(APP).replace("\\", "/"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+        print(build_proc.stdout)
+        if build_proc.returncode == 0:
+            print("Docker image built successfully.")
+            return 0
         print(build_proc.stderr, file=sys.stderr)
-        print("[FAIL] Docker build failed")
-        return 1
-    print("Docker image built successfully.")
-    return 0
+        if attempt < max_retries:
+            print(f"Build failed; retrying in {backoff_seconds}s...")
+            time.sleep(backoff_seconds)
+
+    print(f"[FAIL] Docker build failed after {max_retries} attempts")
+    return 1
 
 
 def _image_exists() -> bool:
@@ -406,8 +421,9 @@ def cmd_generate(args) -> int:
     sandbox with only /workspace mounted — the agent never sees
     evaluation/ or reference/.
 
-    Assumes the Docker sandbox image is already built (run ``npm run build``
-    first, or pass --build to build it here).
+    The Docker sandbox image is built automatically (with retries and
+    backoff) if it is not already present locally; pass --no-build to
+    require a pre-built image instead.
 
     Saves logs to evaluation/proof-of-work/<model-name>/run.log.
     """
@@ -454,16 +470,22 @@ def cmd_generate(args) -> int:
     if driver_src.exists():
         shutil.copy2(driver_src, driver_dst)
 
-    # Ensure the Docker sandbox image exists. Build only when --build is
-    # passed; otherwise require it to already be built (npm run build).
-    if args.build:
-        rc = _build_image()
-        if rc != 0:
-            return rc
-    elif not _image_exists():
-        print("[FAIL] Docker image 'secure-mcp-gateway:latest' not found locally.")
-        print("       Run 'npm run build' first, or pass --build to build now.")
-        return 1
+    # Ensure the Docker sandbox image exists. Build it automatically if
+    # missing (with retries + backoff, since PyPI downloads can be slow),
+    # unless --no-build is passed.
+    if not args.no_build:
+        if not _image_exists():
+            print("Docker image not found locally; building it now (this may take several minutes)...")
+            rc = _build_image()
+            if rc != 0:
+                return rc
+        else:
+            print("Docker image 'secure-mcp-gateway:latest' already present; skipping build.")
+    else:
+        if not _image_exists():
+            print("[FAIL] Docker image 'secure-mcp-gateway:latest' not found locally "
+                  "and --no-build was passed.")
+            return 1
 
     # OpenHands needs LLM_API_KEY + LLM_MODEL via env overrides.
     # TTY_INTERACTIVE/TTY_COMPATIBLE force Rich to use a plain console so
@@ -537,9 +559,9 @@ def main() -> int:
         help="Model to use for generation (overrides OH_MODEL env var)",
     )
     generate_parser.add_argument(
-        "--build",
+        "--no-build",
         action="store_true",
-        help="Build the Docker sandbox image before generating (default: require it to already exist)",
+        help="Do not build the Docker image; require it to already exist locally",
     )
     subparsers.add_parser(
         "build", help="Build the Docker sandbox image (separate from generation)"
