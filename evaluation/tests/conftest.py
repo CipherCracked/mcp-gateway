@@ -28,6 +28,8 @@ API_KEY_B = "key-b-456"
 
 BAD_KEY = "definitely-not-a-valid-key"
 
+GATEWAY_MODULE = os.environ.get("GATEWAY_MODULE", "reference.mcp_gateway.main:app")
+
 
 def _kill_process_tree(pid: int) -> None:
     """Kill a process and all its descendants (Windows: taskkill /T)."""
@@ -123,7 +125,7 @@ def gateway_process():
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
     proc = subprocess.Popen(
-        ["uvicorn", "reference.mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"],
+        ["uvicorn", GATEWAY_MODULE, "--host", "0.0.0.0", "--port", "8000"],
         cwd=str(Path(__file__).resolve().parents[2]),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -24,6 +25,11 @@ import sys
 from pathlib import Path
 
 import yaml
+
+from dotenv import load_dotenv
+
+# Load .env file if present (for LLM_API_KEY etc.)
+load_dotenv()
 
 APP = Path(__file__).resolve().parents[2]  # mcp-gateway root
 EVAL = APP / "evaluation"
@@ -42,19 +48,23 @@ def load_yaml(path: Path) -> dict:
 # Test running + result parsing
 # ---------------------------------------------------------------------------
 
-def run_pytest(test_args: list[str]) -> subprocess.CompletedProcess:
+def run_pytest(test_args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
     """Run pytest with the given args and return the completed process.
 
     Uses ``-v`` (verbose) so each test appears on its own line as
     ``path.py::NodeID PASSED|FAILED|SKIPPED``, which the result parser can
     match. ``-q`` is intentionally omitted because it collapses output to dots.
     """
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     return subprocess.run(
         [sys.executable, "-m", "pytest", *test_args, "-v", "--tb=short"],
         cwd=str(APP),
         capture_output=True,
         text=True,
         timeout=300,
+        env=run_env,
     )
 
 
@@ -188,12 +198,23 @@ def build_check_to_test(acceptance_cfg: dict) -> dict[str, str]:
     return mapping
 
 
-def cmd_score() -> int:
+def cmd_score(args) -> int:
     scoring_cfg = load_yaml(SCORING_YML)
     acceptance_cfg = load_yaml(ACCEPTANCE_YML)
 
+    # Choose which code to score: reference (100% expected) or workspace (model output)
+    target = getattr(args, "target", "workspace")
+    gateway_module = (
+        "reference.mcp_gateway.main:app"
+        if target == "reference"
+        else "workspace.mcp_gateway.main:app"
+    )
+
+    env = os.environ.copy()
+    env["GATEWAY_MODULE"] = gateway_module
+
     # Run the full verifier suite once, then map results to checks.
-    proc = run_pytest([str(TESTS_DIR)])
+    proc = run_pytest([str(TESTS_DIR)], env=env)
     output = proc.stdout + proc.stderr
     results = parse_pytest_results(output)
 
@@ -228,39 +249,37 @@ def cmd_score() -> int:
         f"\nChecks: {passed_count} passed, {failed_count} failed, "
         f"{blocked_count} blocked out of {total_checks}"
     )
-    print(f"Reference score: {final_score:.1%} (target: {reference_target:.1%})")
     print(f"Weights sum: {weights_sum} (must be 1.0)")
+    print(f"Score: {final_score:.1%}")
 
-    ok = (
-        final_score >= reference_target
-        and abs(weights_sum - 1.0) < 1e-9
-        and failed_count == 0
-    )
-    if ok:
-        print("[PASS] Reference target met (100%), weights sum to 1.0, no failures")
+    target = getattr(args, "target", "workspace")
+
+    if target == "reference":
+        # Reference must have zero failures; blocked/skipped checks are
+        # unevaluable, not failed, so they don't fail the reference check.
+        ok = (
+            failed_count == 0
+            and abs(weights_sum - 1.0) < 1e-9
+        )
+        if ok:
+            print("[PASS] Reference: zero failures, weights sum to 1.0")
+            return 0
+        print("[FAIL] Reference: has failures or weights do not sum to 1.0")
+        return 1
+
+    # workspace (model output): report weighted score vs frontier ceiling
+    frontier_ceiling = float(scoring_cfg["scoring"].get("frontier_model_ceiling", 0.3))
+    if final_score < frontier_ceiling:
+        print(f"[PASS] Model score {final_score:.1%} is below frontier ceiling {frontier_ceiling:.0%}")
         return 0
-    print("[FAIL] Reference target NOT met")
+    print(f"[FAIL] Model score {final_score:.1%} is NOT below frontier ceiling {frontier_ceiling:.0%}")
     return 1
 
 
-def cmd_check_reference() -> int:
+def cmd_check_reference(args) -> int:
     """Run the full verifier suite and confirm the reference passes 100%."""
-    proc = run_pytest([str(TESTS_DIR)])
-    output = proc.stdout + proc.stderr
-    print(output)
-
-    passed = output.count("PASSED")
-    failed = output.count("FAILED")
-    skipped = output.count("SKIPPED")
-    total = passed + failed + skipped
-
-    print(f"\nResults: {passed} passed, {failed} failed, {skipped} skipped out of {total}")
-
-    if failed == 0:
-        print("[PASS] Reference passes 100% of checks")
-        return 0
-    print(f"[FAIL] Reference does NOT pass 100% ({failed} failures)")
-    return 1
+    args.target = "reference"
+    return cmd_score(args)
 
 
 def cmd_check_mutants() -> int:
@@ -309,26 +328,108 @@ def cmd_check_mutants() -> int:
     return 0
 
 
-def cmd_generate() -> int:
-    """Generate the seeded workspace for agents to work in.
+def cmd_generate(args) -> int:
+    """Generate a solution by running OpenHands headless.
 
-    Copies the reference gateway package into a workspace/ directory so
-    agents start from a clean copy of the reference implementation.
+    Copies task/public/ to a fresh workspace, runs OpenHands headless
+    seeded with task/instruction.md using the configured frontier model,
+    and saves logs to evaluation/proof-of-work/<model-name>/.
+
+    The agent never sees evaluation/ or reference/.
     """
+    model = (
+        args.model
+        or os.environ.get("OH_MODEL")
+        or "openrouter/nvidia/nemotron-3.5-lightning:free"
+    )
+    model_safe = model.replace("/", "_").replace(":", "_").replace("-", "_")
+
+    proof_dir = EVAL / "proof-of-work" / model_safe
+    proof_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fresh workspace from public materials only (never reference/ or evaluation/)
     workspace = APP / "workspace"
-    reference = APP / "mcp_gateway"
-
     if workspace.exists():
-        print(f"Workspace already exists at {workspace}")
-        return 0
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
 
-    if not reference.exists():
-        print(f"[FAIL] Reference package not found: {reference}", file=sys.stderr)
+    public = APP / "task" / "public"
+    if public.exists():
+        for item in public.iterdir():
+            if item.is_dir():
+                shutil.copytree(item, workspace / item.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, workspace / item.name)
+
+    # Build the Docker sandbox image
+    print("Building Docker sandbox image...")
+    build_proc = subprocess.run(
+        ["bash", str(APP / "app-setup" / "build.sh")],
+        cwd=str(APP),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    print(build_proc.stdout)
+    if build_proc.returncode != 0:
+        print(build_proc.stderr, file=sys.stderr)
+        print("[FAIL] Docker build failed")
         return 1
 
-    workspace.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(reference, workspace / "mcp_gateway", dirs_exist_ok=True)
-    print(f"Generated seeded workspace at {workspace}")
+    # Locate the OpenHands CLI binary
+    oh_bin = shutil.which("openhands")
+    if not oh_bin:
+        candidate = Path("C:/Users/USER/.local/bin/openhands")
+        if candidate.exists():
+            oh_bin = str(candidate)
+    if not oh_bin:
+        print("[FAIL] OpenHands CLI not found", file=sys.stderr)
+        return 1
+
+    # OpenHands needs LLM_API_KEY + LLM_MODEL via env overrides
+    env = os.environ.copy()
+    env["LLM_MODEL"] = model
+    env["LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
+
+    if not env.get("LLM_API_KEY"):
+        print(
+            "[FAIL] LLM_API_KEY environment variable is not set. "
+            "Set it before running npm run generate.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Run OpenHands headless, seeded with the task instruction
+    log_file = proof_dir / "run.log"
+    cmd = [
+        oh_bin,
+        "--headless",
+        "--json",
+        "--override-with-envs",
+        "--always-approve",
+        "-f", str(APP / "task" / "instruction.md"),
+    ]
+
+    print(f"Running OpenHands headless with model: {model}")
+    print(f"Workspace: {workspace}")
+    print(f"Log file: {log_file}")
+
+    with open(log_file, "w", encoding="utf-8") as lf:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(workspace),
+            env=env,
+            stdout=lf,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=600,
+        )
+
+    if proc.returncode != 0:
+        print(f"[FAIL] OpenHands exited with code {proc.returncode}. See {log_file}")
+        return 1
+
+    print(f"OpenHands completed successfully. Logs: {log_file}")
     return 0
 
 
@@ -342,10 +443,25 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("generate", help="Generate the seeded agent workspace")
-    subparsers.add_parser("score", help="Run the full weighted scoring pipeline")
+    generate_parser = subparsers.add_parser(
+        "generate", help="Generate the seeded agent workspace"
+    )
+    generate_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model to use for generation (overrides OH_MODEL env var)",
+    )
+    score_parser = subparsers.add_parser(
+        "score", help="Run the full weighted scoring pipeline"
+    )
+    score_parser.add_argument(
+        "--target",
+        choices=["reference", "workspace"],
+        default="workspace",
+        help="Which code to score: 'reference' (must pass 100%%) or 'workspace' (model output)",
+    )
     subparsers.add_parser(
-        "check:reference", help="Run reference validation (must pass 100%)"
+        "check:reference", help="Run reference validation (must pass 100%%)"
     )
     subparsers.add_parser(
         "check:mutants", help="Run mutant detection (all must be caught)"
@@ -354,11 +470,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "generate":
-        return cmd_generate()
+        return cmd_generate(args)
     if args.command == "score":
-        return cmd_score()
+        return cmd_score(args)
     if args.command == "check:reference":
-        return cmd_check_reference()
+        return cmd_check_reference(args)
     if args.command == "check:mutants":
         return cmd_check_mutants()
 
