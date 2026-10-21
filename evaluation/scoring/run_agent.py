@@ -462,6 +462,7 @@ def main() -> None:
         model=model,
         api_key=api_key,
         base_url=base_url,
+        usage_id="condenser",
         reasoning_effort=condenser_cfg.get("reasoning_effort", "low"),
         caching_prompt=agent_cfg.get("caching_prompt", True),
     )
