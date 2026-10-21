@@ -46,6 +46,40 @@ from openhands.sdk.tool.registry import register_tool
 
 
 # ---------------------------------------------------------------------------
+# Path normalization helper
+# ---------------------------------------------------------------------------
+
+
+def _resolve_workspace_path(workspace: Path, path: str) -> Path:
+    """Resolve a user-supplied path against the workspace root.
+
+    Handles both relative paths (``src/main.py``) and container absolute
+    paths (``/workspace/src/main.py``) that the model may pick up from
+    shell command output inside the Docker sandbox. Strips a leading
+    ``/workspace/`` prefix so container paths work with host-side file tools.
+    """
+    workspace_resolved = workspace.resolve()
+
+    p = Path(path)
+    # Strip leading /workspace/ or / so container paths become relative.
+    if p.is_absolute():
+        parts = p.parts
+        if len(parts) > 1 and parts[0] == "" and parts[1] == "workspace":
+            p = Path(*parts[2:])
+        elif len(parts) > 0 and parts[0] == "":
+            p = Path(*parts[1:])
+
+    target = (workspace_resolved / p).resolve()
+
+    # Strict containment check: is_relative_to avoids false positives like
+    # workspace/foo matching workspace/foobar (which startswith would allow).
+    if not target.is_relative_to(workspace_resolved):
+        raise ValueError("path escapes workspace")
+
+    return target
+
+
+# ---------------------------------------------------------------------------
 # Progress logging callback
 # ---------------------------------------------------------------------------
 
@@ -162,12 +196,7 @@ class ReadFileExecutor(ToolExecutor[ReadFileAction, ReadFileObservation]):
         self, action: ReadFileAction, conversation=None  # noqa: ARG002
     ) -> ReadFileObservation:
         try:
-            target = (self.workspace / action.path).resolve()
-            # Safety: keep inside workspace
-            if not str(target).startswith(str(self.workspace.resolve())):
-                return ReadFileObservation.from_text(
-                    text="path escapes workspace", is_error=True
-                )
+            target = _resolve_workspace_path(self.workspace, action.path)
             content = target.read_text(encoding="utf-8")
             return ReadFileObservation.from_text(text=content, is_error=False)
         except Exception as exc:  # noqa: BLE001
@@ -182,7 +211,7 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
             cls(
                 action_type=ReadFileAction,
                 observation_type=ReadFileObservation,
-                description="Read a file from the workspace and return its contents.",
+                description="Read a file from the workspace. Accepts paths relative to the workspace root (e.g. src/main.py) or Docker container paths (e.g. /workspace/src/main.py).",
                 executor=ReadFileExecutor(Path(workspace)),
                 annotations=ToolAnnotations(
                     title="read_file",
@@ -212,11 +241,7 @@ class WriteFileExecutor(ToolExecutor[WriteFileAction, WriteFileObservation]):
         self, action: WriteFileAction, conversation=None  # noqa: ARG002
     ) -> WriteFileObservation:
         try:
-            target = (self.workspace / action.path).resolve()
-            if not str(target).startswith(str(self.workspace.resolve())):
-                return WriteFileObservation.from_text(
-                    text="path escapes workspace", is_error=True
-                )
+            target = _resolve_workspace_path(self.workspace, action.path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(action.content, encoding="utf-8")
             return WriteFileObservation.from_text(text="ok", is_error=False)
@@ -232,7 +257,7 @@ class WriteFileTool(ToolDefinition[WriteFileAction, WriteFileObservation]):
             cls(
                 action_type=WriteFileAction,
                 observation_type=WriteFileObservation,
-                description="Write content to a file in the workspace.",
+                description="Write content to a file in the workspace. Accepts paths relative to the workspace root (e.g. src/main.py) or Docker container paths (e.g. /workspace/src/main.py).",
                 executor=WriteFileExecutor(Path(workspace)),
                 annotations=ToolAnnotations(
                     title="write_file",
