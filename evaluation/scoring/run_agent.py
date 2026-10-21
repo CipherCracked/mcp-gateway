@@ -352,7 +352,7 @@ def _is_transient_llm_error(exc: BaseException) -> bool:
     return False
 
 
-def run_with_retry(conversation: Conversation, max_attempts: int = 3) -> None:
+def run_with_retry(conversation: Conversation, max_attempts: int = 10) -> None:
     """Run the conversation with retry on transient LLM errors.
 
     Uses tenacity with exponential backoff. Rate-limit errors (429) are retried
@@ -362,7 +362,7 @@ def run_with_retry(conversation: Conversation, max_attempts: int = 3) -> None:
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(max_attempts),
-        wait=tenacity.wait_exponential(multiplier=2, min=4, max=60),
+        wait=tenacity.wait_exponential(multiplier=3, min=10, max=300),
         retry=tenacity.retry_if_exception(_is_transient_llm_error),
         reraise=True,
     )
