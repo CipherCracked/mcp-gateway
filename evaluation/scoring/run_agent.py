@@ -374,6 +374,7 @@ def main() -> None:
         model=model,
         api_key=api_key,
         base_url=base_url,
+        reasoning_effort="medium",
     )
 
     # Host workspace path (mounted into the container at /workspace)
