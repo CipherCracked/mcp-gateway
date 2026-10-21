@@ -493,7 +493,7 @@ def _build_image(max_retries: int = 3, backoff_seconds: int = 10,
     build_cmd = [
         "docker", "build",
         "--tag", SANDBOX_IMAGE,
-        "--file", str(APP / "environment" / "Dockerfile.sandbox").replace("\\", "/"),
+        "--file", str(APP / "environment" / "Dockerfile").replace("\\", "/"),
         ".",
     ]
 

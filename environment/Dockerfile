@@ -1,25 +1,14 @@
 FROM python:3.12-slim
 
-# Install uv via the official image (avoids needing pip just to get uv).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-WORKDIR /app
-
-# System deps (none beyond python)
+# Minimal sandbox for agent command execution.
+# No PyPI installs here — OpenHands SDK runs on the host, not in this image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies (gateway runtime + tests)
-COPY environment/requirements.txt .
-RUN uv pip install --system -r requirements.txt
-
-# OpenHands SDK for the agent sandbox (installed here so the agent runs
-# inside the container with no access to the host filesystem except /workspace).
-# openhands-sdk (not full openhands CLI) avoids pulling browser-use/playwright.
-RUN uv pip install --system openhands-sdk==1.21.0
-
-# Agent workspace — the only host directory mounted into this container.
 RUN mkdir -p /workspace
 
-EXPOSE 8000
+WORKDIR /workspace
+
+# Keep the container alive so the host-based agent can docker exec into it.
+CMD ["sleep", "infinity"]
