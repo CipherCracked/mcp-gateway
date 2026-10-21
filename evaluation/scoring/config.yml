@@ -1,0 +1,28 @@
+# Agent / LLM configuration for OpenHands SDK runs.
+#
+# Edit these to tune agent behavior per model. CLI flags (--model, --no-build,
+# --run) still override where applicable. Secrets (LLM_API_KEY) live in .env,
+# not here.
+
+agent:
+  # Maximum agent.step() iterations per conversation.run() before stopping.
+  # Lower this to cap cost on paid models; raise for harder tasks.
+  max_iteration_per_run: 200
+
+  # Enable stuck-detection (conversation auto-abort on repeated no-progress).
+  stuck_detection: true
+
+  # Reasoning effort for the main agent LLM: "low", "medium", or "high".
+  # "medium" is a good default; "low" saves tokens on simpler tasks.
+  reasoning_effort: medium
+
+  # Enable prompt caching on the agent LLM (reduces cost on repeated prompts).
+  caching_prompt: true
+
+  # Context condenser (summarizes old conversation history to stay within limits).
+  condenser:
+    enabled: true
+    max_size: 200          # Max summary size (approximate token budget)
+    keep_first: 5          # Keep first N messages unsummarized
+    minimum_progress: 0.1  # Minimum progress required to avoid summarizing
+    reasoning_effort: medium  # Lighter model for summarization

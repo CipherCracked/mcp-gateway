@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self
 
+import yaml
+
 import tenacity
 from pydantic import Field
 
@@ -379,6 +381,20 @@ def run_with_retry(conversation: Conversation, max_attempts: int = 10) -> None:
     _run()
 
 
+def load_agent_config(workspace_host: str) -> dict:
+    """Load agent config from evaluation/scoring/config.yml relative to repo root.
+
+    The repo root is the parent of the workspace host directory. Returns an
+    empty dict if the config file does not exist.
+    """
+    repo_root = Path(workspace_host).resolve().parent.parent
+    config_path = repo_root / "evaluation" / "scoring" / "config.yml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -426,10 +442,36 @@ def main() -> None:
         minimum_progress=0.1,
     )
 
-    # Host workspace path (mounted into the container at /workspace)
     workspace = Path(os.environ.get("WORKSPACE_HOST", "/workspace"))
 
-    # Register custom tools
+    # Load agent config from YAML (evaluation/scoring/config.yml).
+    agent_config = load_agent_config(str(workspace))
+    agent_cfg = agent_config.get("agent", {})
+    condenser_cfg = agent_cfg.get("condenser", {})
+
+    llm = LLM(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        reasoning_effort=agent_cfg.get("reasoning_effort", "medium"),
+        caching_prompt=agent_cfg.get("caching_prompt", True),
+    )
+
+    # Condenser LLM for context compaction (uses same model, lighter settings).
+    condenser_llm = LLM(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        reasoning_effort=condenser_cfg.get("reasoning_effort", "low"),
+        caching_prompt=agent_cfg.get("caching_prompt", True),
+    )
+
+    condenser = LLMSummarizingCondenser(
+        llm=condenser_llm,
+        max_size=condenser_cfg.get("max_size", 200),
+        keep_first=condenser_cfg.get("keep_first", 5),
+        minimum_progress=condenser_cfg.get("minimum_progress", 0.1),
+    ) if condenser_cfg.get("enabled", True) else None
     register_tool("read_file", ReadFileTool.create)
     register_tool("write_file", WriteFileTool.create)
     register_tool("run_command", RunCommandTool.create)
@@ -449,8 +491,8 @@ def main() -> None:
     conversation = Conversation(
         agent=agent,
         workspace=str(workspace),
-        max_iteration_per_run=350,
-        stuck_detection=True,
+        max_iteration_per_run=agent_cfg.get("max_iteration_per_run", 350),
+        stuck_detection=agent_cfg.get("stuck_detection", True),
         callbacks=[AgentProgressLogger()],
     )
 
