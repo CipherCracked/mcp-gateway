@@ -27,6 +27,9 @@ import tenacity
 from pydantic import Field
 
 from openhands.sdk import Agent, Conversation, LLM, Tool, ToolDefinition
+from openhands.sdk.context.condenser.llm_summarizing_condenser import (
+    LLMSummarizingCondenser,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -57,6 +60,9 @@ def _resolve_workspace_path(workspace: Path, path: str) -> Path:
     paths (``/workspace/src/main.py``) that the model may pick up from
     shell command output inside the Docker sandbox. Strips a leading
     ``/workspace/`` prefix so container paths work with host-side file tools.
+
+    On Windows, ``Path("/workspace/foo").parts`` returns ``('\\', 'workspace', 'foo')``
+    rather than the POSIX ``('', 'workspace', 'foo')``, so both forms are handled.
     """
     workspace_resolved = workspace.resolve()
 
@@ -64,9 +70,10 @@ def _resolve_workspace_path(workspace: Path, path: str) -> Path:
     # Strip leading /workspace/ or / so container paths become relative.
     if p.is_absolute():
         parts = p.parts
-        if len(parts) > 1 and parts[0] == "" and parts[1] == "workspace":
+        # POSIX: ('', 'workspace', 'foo') | Windows: ('\\', 'workspace', 'foo')
+        if len(parts) > 2 and parts[0] in ("", "\\") and parts[1] == "workspace":
             p = Path(*parts[2:])
-        elif len(parts) > 0 and parts[0] == "":
+        elif len(parts) > 1 and parts[0] in ("", "\\"):
             p = Path(*parts[1:])
 
     target = (workspace_resolved / p).resolve()
@@ -400,6 +407,23 @@ def main() -> None:
         api_key=api_key,
         base_url=base_url,
         reasoning_effort="medium",
+        caching_prompt=True,
+    )
+
+    # Condenser LLM for context compaction (uses same model, lighter settings).
+    condenser_llm = LLM(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        reasoning_effort="low",
+        caching_prompt=True,
+    )
+
+    condenser = LLMSummarizingCondenser(
+        llm=condenser_llm,
+        max_size=200,
+        keep_first=5,
+        minimum_progress=0.1,
     )
 
     # Host workspace path (mounted into the container at /workspace)
@@ -420,12 +444,12 @@ def main() -> None:
         ),
     ]
 
-    agent = Agent(llm=llm, tools=tools)
+    agent = Agent(llm=llm, tools=tools, condenser=condenser)
 
     conversation = Conversation(
         agent=agent,
         workspace=str(workspace),
-        max_iteration_per_run=500,
+        max_iteration_per_run=350,
         stuck_detection=True,
         callbacks=[AgentProgressLogger()],
     )

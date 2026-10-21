@@ -18,7 +18,7 @@ scoring:
   # can report an unevaluable check separately from a genuinely broken one.
   reference_target: 100
   mutant_detection_required: true
-  frontier_model_ceiling: 30
+  frontier_model_ceiling: 0.3
 
 check_groups:
   - name: authentication

@@ -292,6 +292,7 @@ def cmd_score(args) -> int:
         if model
         else None
     )
+    run_timestamp = getattr(args, "run", None)
 
     # For workspace scoring, copy the per-model workspace's mcp_gateway
     # package into workspace/mcp_gateway/ so the existing module path
@@ -303,7 +304,20 @@ def cmd_score(args) -> int:
                 file=sys.stderr,
             )
             return 1
-        model_workspace = APP / "workspace" / model_safe / "mcp_gateway"
+        if run_timestamp:
+            model_workspace = APP / "workspace" / f"{model_safe}_{run_timestamp}" / "mcp_gateway"
+        else:
+            # Auto-pick the latest timestamped workspace for this model.
+            latest_path = _find_latest_run_workspace(model_safe)
+            if latest_path is None:
+                print(
+                    f"[FAIL] No timestamped workspace found for model '{model_safe}'. "
+                    f"Specify --run <timestamp> or run generate first.",
+                    file=sys.stderr,
+                )
+                return 1
+            model_workspace = latest_path / "mcp_gateway"
+            print(f"[INFO] Auto-selected latest run workspace: {latest_path}")
         target_workspace = APP / "workspace" / "mcp_gateway"
         if not model_workspace.exists():
             print(
@@ -586,13 +600,54 @@ def cmd_build(args) -> int:
     return _build_image()
 
 
+def _make_timestamp() -> str:
+    """Return a UTC timestamp string for unique workspace/run names.
+
+    Format: YYYYMMDD_HHMMSS (e.g. 20261021_153000). Safe for use in
+    directory names on Windows (no colons, no slashes).
+    """
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+
+def _find_latest_run_workspace(model_safe: str) -> Path | None:
+    """Find the most recent timestamped workspace directory for a model.
+
+    Looks for directories matching ``workspace/<model_safe>_<timestamp>``
+    and returns the one with the latest timestamp, or None if none exist.
+    Only timestamped directories are considered — there is no fallback to
+    pre-timestamping plain directories.
+    """
+    workspace_root = APP / "workspace"
+    if not workspace_root.exists():
+        return None
+
+    prefix = f"{model_safe}_"
+    candidates: list[tuple[str, Path]] = []
+    for child in workspace_root.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        if not name.startswith(prefix):
+            continue
+        ts = name[len(prefix):]
+        # Validate that the suffix looks like a timestamp (YYYYMMDD_HHMMSS)
+        if len(ts) == 15 and ts[8] == "_" and ts[:8].isdigit() and ts[9:].isdigit():
+            candidates.append((ts, child))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    return candidates[0][1]
+
+
 def cmd_generate(args) -> int:
     """Generate a solution by running OpenHands headless on the host.
 
     Copies task/public/ to a per-model workspace under
-    workspace/<model-name>/, starts a Docker sandbox container with only
-    /workspace mounted, then runs the OpenHands SDK agent on the host.
-    The agent's file tools read/write the mounted workspace, and its
+    workspace/<model-name>_<timestamp>/, starts a Docker sandbox container
+    with only /workspace mounted, then runs the OpenHands SDK agent on the
+    host. The agent's file tools read/write the mounted workspace, and its
     shell commands execute inside the container via ``docker exec``.
     The agent never sees evaluation/ or reference/.
 
@@ -604,29 +659,23 @@ def cmd_generate(args) -> int:
         or "openrouter/nvidia/nemotron-3.5-lightning:free"
     )
     model_safe = model.replace("/", "_").replace(":", "_").replace("-", "_")
+    timestamp = _make_timestamp()
 
     proof_dir = EVAL / "proof-of-work" / model_safe
     proof_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fresh per-model workspace from public materials only (never reference/
-    # or evaluation/). Each model gets its own workspace so runs don't
-    # overwrite each other. Lives at workspace/<model-name>/ at repo root so
-    # the scoring step can import workspace.mcp_gateway.main:app.
-    workspace = APP / "workspace" / model_safe
+    # Fresh per-model, per-run workspace from public materials only (never
+    # reference/ or evaluation/). Timestamping lets us run the same model
+    # multiple times without overwriting previous runs.
+    # Lives at workspace/<model-name>_<timestamp>/ at repo root so the
+    # scoring step can import workspace.mcp_gateway.main:app.
+    workspace = APP / "workspace" / f"{model_safe}_{timestamp}"
 
     # Stop any leftover sandbox container from a previous run so the host
     # can clean up the workspace directory (Docker volume mount locks files
     # on Windows).
     _stop_container()
 
-    if workspace.exists():
-        try:
-            shutil.rmtree(workspace)
-        except PermissionError:
-            # Docker Desktop on Windows may hold file locks on mounted
-            # volumes even after the container stops. Proceed anyway;
-            # the copy step will overwrite existing files.
-            print(f"[WARN] Could not remove {workspace} (file in use). Overwriting existing files instead.")
     workspace.mkdir(parents=True, exist_ok=True)
 
     public = APP / "task" / "public"
@@ -761,7 +810,13 @@ def main() -> int:
     score_parser.add_argument(
         "--model",
         default=None,
-        help="Model name (used to locate workspace/<model>/mcp_gateway for scoring)",
+        help="Model name (used to locate workspace/<model>_<timestamp>/mcp_gateway for scoring)",
+    )
+    score_parser.add_argument(
+        "--run",
+        default=None,
+        help="Timestamp of the run to score (e.g. 20261021_153000). "
+             "If omitted, the latest timestamped workspace for the model is used.",
     )
     subparsers.add_parser(
         "check:reference", help="Run reference validation (must pass 100%%)"

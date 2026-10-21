@@ -59,14 +59,20 @@ OpenHands SDK Agent                     python:3.12-slim
 ### Evaluation flow
 
 1. **Generate**: `npm run generate -- --model <model-name>`
-   - Copies `task/public/` to a per-model workspace at `workspace/<model-safe-name>/`
+   - Copies `task/public/` to a per-model, per-run workspace at
+     `workspace/<model-safe-name>_<timestamp>/` (timestamped so multiple runs
+     per model don't overwrite each other)
    - Starts the Docker sandbox container with only `/workspace` mounted
    - Runs the OpenHands SDK agent on the host against the task instruction
    - The agent writes code, runs commands, and iterates until done
-   - Logs stream live to stdout and are saved to `evaluation/proof-of-work/<model-name>/run.log`
+   - Logs stream live to stdout and are saved to
+     `evaluation/proof-of-work/<model-name>/run.log`
 
 2. **Score**: `npm run score -- --model <model-name> --target workspace`
-   - Copies the model's `workspace/<model>/mcp_gateway` into `workspace/mcp_gateway/`
+   - Copies the model's `workspace/<model-safe-name>_<timestamp>/mcp_gateway`
+     into `workspace/mcp_gateway/`
+   - Use `--run <timestamp>` to score a specific run; if omitted, the latest
+     timestamped workspace for that model is auto-selected
    - Sets `GATEWAY_MODULE=workspace.mcp_gateway.main:app`
    - Starts the gateway container via `app-setup/start.sh`
    - Runs the hidden verifier test suite
