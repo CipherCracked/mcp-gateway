@@ -362,7 +362,7 @@ def run_with_retry(conversation: Conversation, max_attempts: int = 10) -> None:
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(max_attempts),
-        wait=tenacity.wait_exponential(multiplier=3, min=10, max=300),
+        wait=tenacity.wait_exponential(multiplier=3, min=10, max=30),
         retry=tenacity.retry_if_exception(_is_transient_llm_error),
         reraise=True,
     )
