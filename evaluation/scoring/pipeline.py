@@ -727,7 +727,7 @@ def cmd_generate(args) -> int:
 
     # Start the sandbox container, run the agent on the host, then clean up.
     workspace_host = str(workspace).replace("\\", "/")
-    log_file = proof_dir / "run.log"
+    log_file = proof_dir / f"run_{timestamp}.log"
 
     if not _start_container(workspace_host):
         return 1
