@@ -645,13 +645,6 @@ def cmd_generate(args) -> int:
         instruction_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(instruction_src, instruction_dst)
 
-    # Copy the OpenHands SDK driver script into the workspace. It runs on
-    # the host, not inside the container.
-    driver_src = APP / "evaluation" / "scoring" / "run_agent.py"
-    driver_dst = workspace / "run_agent.py"
-    if driver_src.exists():
-        shutil.copy2(driver_src, driver_dst)
-
     # Ensure openhands-sdk is available on the host (one-time pip install).
     rc = _ensure_openhands_installed()
     if rc != 0:
@@ -713,7 +706,7 @@ def cmd_generate(args) -> int:
             )
             lf.flush()
             proc = tee_subprocess(
-                [sys.executable, str(workspace / "run_agent.py")],
+                [sys.executable, str(APP / "evaluation" / "scoring" / "run_agent.py")],
                 cwd=str(workspace),
                 env=agent_env,
                 log_file=lf,
