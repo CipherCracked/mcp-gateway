@@ -23,7 +23,9 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO
 
 import yaml
 
@@ -46,21 +48,100 @@ def load_yaml(path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Subprocess streaming helpers
+# ---------------------------------------------------------------------------
+
+
+def tee_subprocess(
+    cmd: list[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict | None = None,
+    log_file: IO[str] | None = None,
+    timeout: int | None = None,
+    stream_to_stdout: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run a subprocess, writing its output to a log file and optionally to stdout.
+
+    Lines are streamed as they are produced (unlike ``subprocess.run`` which
+    buffers everything), so long-running commands show live progress. The
+    full output is also captured and returned in ``CompletedProcess.stdout``.
+    """
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=run_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,  # line-buffered
+    )
+
+    captured: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        captured.append(line)
+        if log_file is not None:
+            log_file.write(line)
+            log_file.flush()
+        if stream_to_stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    proc.wait(timeout=timeout)
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode,
+        stdout="".join(captured),
+        stderr="",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test running + result parsing
 # ---------------------------------------------------------------------------
 
-def run_pytest(test_args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
+
+def run_pytest(
+    test_args: list[str],
+    env: dict | None = None,
+    stream: bool = False,
+    log_file: IO[str] | None = None,
+) -> subprocess.CompletedProcess:
     """Run pytest with the given args and return the completed process.
 
     Uses ``-v`` (verbose) so each test appears on its own line as
     ``path.py::NodeID PASSED|FAILED|SKIPPED``, which the result parser can
     match. ``-q`` is intentionally omitted because it collapses output to dots.
+
+    When ``stream`` is True, output is written live to ``log_file`` and stdout
+    so long test runs show progress instead of appearing all at once at the end.
     """
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
+
+    cmd = [sys.executable, "-m", "pytest", *test_args, "-v", "--tb=short"]
+
+    if stream:
+        return tee_subprocess(
+            cmd,
+            cwd=str(APP),
+            env=run_env,
+            log_file=log_file,
+            timeout=300,
+            stream_to_stdout=True,
+        )
+
     return subprocess.run(
-        [sys.executable, "-m", "pytest", *test_args, "-v", "--tb=short"],
+        cmd,
         cwd=str(APP),
         capture_output=True,
         text=True,
@@ -244,14 +325,25 @@ def cmd_score(args) -> int:
     env["GATEWAY_MODULE"] = gateway_module
 
     # Run the full verifier suite once, then map results to checks.
-    proc = run_pytest([str(TESTS_DIR)], env=env)
+    print(f"[INFO] Scoring target: {target}", flush=True)
+    print(f"[INFO] Gateway module: {gateway_module}", flush=True)
+    print(f"[INFO] Started at: {datetime.now(timezone.utc).isoformat()}", flush=True)
+    started_at = time.time()
+
+    proc = run_pytest([str(TESTS_DIR)], env=env, stream=True)
     output = proc.stdout + proc.stderr
     results = parse_pytest_results(output)
+
+    elapsed = time.time() - started_at
+    print(f"[INFO] Test suite completed in {elapsed:.1f}s", flush=True)
 
     check_to_test = build_check_to_test(acceptance_cfg)
     check_results: dict[str, str] = {}
     for check_id, test_spec in check_to_test.items():
-        check_results[check_id] = check_test_result(results, test_spec)
+        status = check_test_result(results, test_spec)
+        check_results[check_id] = status
+        mark = {"passed": "[PASS]", "failed": "[FAIL]", "blocked": "[BLOCK]"}[status]
+        print(f"  {mark} {check_id}: {status}", flush=True)
 
     final_score, check_details = compute_weighted_score(scoring_cfg, check_results)
 
@@ -615,13 +707,17 @@ def cmd_generate(args) -> int:
         print(f"Log file: {log_file}")
 
         with open(log_file, "w", encoding="utf-8") as lf:
-            proc = subprocess.run(
+            lf.write(
+                f"[{datetime.now(timezone.utc).isoformat()}] "
+                f"Starting OpenHands agent run — model={model}\n"
+            )
+            lf.flush()
+            proc = tee_subprocess(
                 [sys.executable, str(workspace / "run_agent.py")],
                 cwd=str(workspace),
                 env=agent_env,
-                stdout=lf,
-                stderr=subprocess.STDOUT,
-                text=True,
+                log_file=lf,
+                stream_to_stdout=True,
             )
     finally:
         _stop_container()
