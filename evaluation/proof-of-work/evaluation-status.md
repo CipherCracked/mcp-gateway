@@ -43,9 +43,20 @@ The OpenHands SDK (openhands-sdk==1.21.0) agent runs on the host (Windows), with
 
 2. **`cmd_score` simplified**: Uses the simpler `Path | None` return — no tuple unpacking, no backward-compat `[WARN]` message.
 
-### What is needed for the second frontier-model evaluation
+### Model 2: openrouter/minimax/minimax-m3.1-flash:free
 
-1. Run `npm run generate --model <second-model>` to generate a second model's solution.
-2. Run `npm run score --target workspace --model <second-model-safe-name>` to score it.
-3. Confirm the second model's score is also < 30%.
-4. Record both model results in this file.
+| Item | Result |
+|------|--------|
+| Safe name | `openrouter_minimax_minimax_m3.1_flash_free` |
+| Run log | `evaluation/proof-of-work/openrouter_minimax_minimax_m3.1_flash_free/run_20261021_200405.log` |
+| Weighted score (as-is) | **0.0%** (0 passed, 0 failed, 35 blocked out of 35 checks) |
+| Weighted score (with minimal Windows fixes) | **61.0%** (21 passed, 10 failed, 4 blocked out of 35 checks) |
+| Frontier ceiling | 30% (0.3) |
+| Below ceiling? | **No** (61.0% > 30% with fixes; 0.0% < 30% as-is) |
+| Failure reason (as-is) | Gateway failed to start — `signal.SIGHUP` doesn't exist on Windows and model's `_install_signal_handlers` doesn't guard against it; missing `/_test/reset_limiters` and `/_test/raise_error` test endpoints required by conftest |
+| Config findings | Model wrote `testdata/config/gateway.yaml` but: (a) wrong location — not in config search path (`./config/gateway.yaml`, `./gateway.yaml`, `/app/config/gateway.yaml`); (b) uses old `reference.mcp_gateway.servers.*` import paths; (c) API keys `key-a`/`key-b`/`key-admin` don't match conftest's `key-a-123`/`key-b-456`/`key-admin-789` |
+| Known agent issues | Wrote to both `mcp_gateway/` (correct) and `reference/mcp_gateway/` (dead weight); `testdata/config/gateway.yaml` in wrong location; missing test-only endpoints; SIGHUP unguarded on Windows |
+| Fixes applied to model code (for scoring) | 1. Guarded `signal.SIGHUP` with `hasattr(signal, "SIGHUP")` in `_install_signal_handlers`; 2. Added `POST /_test/reset_limiters` endpoint; 3. Added `POST /_test/raise_error` endpoint |
+| Fixes applied to pipeline.py | Writes harness `config/gateway.yaml` to repo root before scoring (correct server commands `mcp_gateway.servers.*`, conftest-matching API keys) |
+| Scoring command used | `npm run score -- --model "openrouter/minimax/minimax-m3.1-flash:free"` |
+

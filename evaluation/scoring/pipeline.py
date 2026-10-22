@@ -329,6 +329,45 @@ def cmd_score(args) -> int:
             shutil.rmtree(target_workspace)
         shutil.copytree(model_workspace, target_workspace)
 
+    # The harness provides the runtime config file (per the task spec, actual
+    # API keys and allowlists are set by the evaluation harness). Write it to
+    # the repo root so the gateway's config loader finds it at
+    # ./config/gateway.yaml — uvicorn and pytest both run with cwd=repo root
+    # on the host, and /app/config/gateway.yaml does not exist on Windows.
+    server_prefix = "reference.mcp_gateway" if target == "reference" else "mcp_gateway"
+    config_yaml = f"""gateway:
+  host: "0.0.0.0"
+  port: 8000
+  request_max_bytes: 1048576
+  rate_limit_per_minute: 60
+  concurrency_limit: 10
+  execution_timeout_seconds: 30
+  gateway_timeout_seconds: 35
+
+servers:
+  documents:
+    command: ["python", "-m", {server_prefix}.servers.documents"]
+  jobs:
+    command: ["python", "-m", {server_prefix}.servers.jobs"]
+
+clients:
+  client_a:
+    api_key: "key-a-123"
+    allowlist: ["documents.search_documents", "documents.get_document"]
+  client_b:
+    api_key: "key-b-456"
+    allowlist: ["jobs.execute_job", "jobs.get_job_status"]
+  client_admin:
+    api_key: "key-admin-789"
+    allowlist: ["documents.search_documents", "documents.get_document", "jobs.execute_job", "jobs.get_job_status"]
+"""
+
+    config_dir = APP / "config"
+    config_dir.mkdir(exist_ok=True)
+    config_path = config_dir / "gateway.yaml"
+    config_path.write_text(config_yaml, encoding="utf-8")
+    print(f"[INFO] Wrote harness config to {config_path}", flush=True)
+
     gateway_module = (
         "reference.mcp_gateway.main:app"
         if target == "reference"
