@@ -432,6 +432,27 @@ def cmd_score(args) -> int:
     print(f"Weights sum: {weights_sum} (must be 1.0)")
     print(f"Score: {final_score:.1%}")
 
+    # Save workspace scoring results to proof-of-work
+    if target == "workspace" and model_safe:
+        proof_dir = EVAL / "proof-of-work" / model_safe
+        proof_dir.mkdir(parents=True, exist_ok=True)
+        run_id = run_timestamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        proof_file = proof_dir / f"score_{run_id}.json"
+
+        proof_data = {
+            "model": model,
+            "run_timestamp": run_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "reference_score": final_score,
+            "weights_sum": weights_sum,
+            "frontier_ceiling": float(scoring_cfg["scoring"].get("frontier_model_ceiling", 0.3)),
+            "passed": final_score < float(scoring_cfg["scoring"].get("frontier_model_ceiling", 0.3)),
+            "checks": check_details,
+        }
+
+        proof_file.write_text(json.dumps(proof_data, indent=2), encoding="utf-8")
+        print(f"[INFO] Score proof saved to {proof_file}")
+
     target = getattr(args, "target", "workspace")
 
     if target == "reference":
@@ -457,13 +478,67 @@ def cmd_score(args) -> int:
 
 
 def cmd_check_reference(args) -> int:
-    """Run the full verifier suite and confirm the reference passes 100%."""
+    """Run the full verifier suite and confirm the reference passes 100%.
+
+    Saves detailed output to evaluation/proof-of-work/reference/<timestamp>.json
+    """
+    from datetime import datetime, timezone
+    import json
+
     args.target = "reference"
-    return cmd_score(args)
+
+    # Capture cmd_score output by running it and collecting the printed report
+    # We'll reuse cmd_score but intercept the report
+    scoring_cfg = load_yaml(SCORING_YML)
+    acceptance_cfg = load_yaml(ACCEPTANCE_YML)
+
+    # Run the same scoring logic but capture the report
+    args.target = "reference"
+    # Temporarily replace print with capture for the report
+    import io
+    import sys
+
+    old_stdout = sys.stdout
+    sys.stdout = captured_output = io.StringIO()
+    try:
+        rc = cmd_score(args)
+    finally:
+        sys.stdout = old_stdout
+
+    output = captured_output.getvalue()
+    print(output)  # Re-print to actual stdout
+
+    # Extract the JSON report from output
+    report = None
+    for line in output.split('\n'):
+        line = line.strip()
+        if line.startswith('{') and 'reference_score' in line:
+            try:
+                report = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                pass
+
+    # Save to proof-of-work
+    if report:
+        proof_dir = EVAL / "proof-of-work" / "reference"
+        proof_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        proof_file = proof_dir / f"reference_{timestamp}.json"
+        proof_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"[INFO] Reference proof saved to {proof_file}")
+
+    return rc
 
 
 def cmd_check_mutants() -> int:
-    """Run mutant detection via test_mutants.py."""
+    """Run mutant detection via test_mutants.py.
+
+    Saves detailed output to evaluation/proof-of-work/mutants/<timestamp>.json
+    """
+    from datetime import datetime, timezone
+    import json
+
     if not MUTANTS_SCRIPT.exists():
         print(f"[FAIL] Mutant test script not found: {MUTANTS_SCRIPT}", file=sys.stderr)
         return 1
@@ -479,9 +554,6 @@ def cmd_check_mutants() -> int:
     if proc.stderr:
         print(proc.stderr, file=sys.stderr)
 
-    # Parse results from the "Status:" lines (one per mutant, in the detailed
-    # section). Avoid counting the summary section which repeats the same
-    # statuses and would double-count.
     output = proc.stdout
     mutant_headers = re.findall(r"Testing mutant: (\w+)", output)
     total_mutants = len(mutant_headers)
@@ -499,6 +571,27 @@ def cmd_check_mutants() -> int:
 
     print(f"\nMutants: {detected} detected, {not_detected_count} NOT detected out of {total_mutants} ({skipped_count} skipped)")
     print(f"Detection rate: {detection_rate:.0%}")
+
+    # Save to proof-of-work
+    proof_dir = EVAL / "proof-of-work" / "mutants"
+    proof_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    proof_data = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total_mutants": total_mutants,
+        "detected": detected,
+        "not_detected": not_detected_count,
+        "skipped": skipped_count,
+        "detection_rate": detection_rate,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "pass": detection_rate >= 1.0,
+    }
+
+    proof_file = proof_dir / f"mutants_{timestamp}.json"
+    proof_file.write_text(json.dumps(proof_data, indent=2), encoding="utf-8")
+    print(f"[INFO] Mutants proof saved to {proof_file}")
 
     required = load_yaml(SCORING_YML)["scoring"].get("mutant_detection_required", False)
     if required and detection_rate < 1.0:
