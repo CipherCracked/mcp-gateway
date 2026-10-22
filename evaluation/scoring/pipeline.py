@@ -294,9 +294,8 @@ def cmd_score(args) -> int:
     )
     run_timestamp = getattr(args, "run", None)
 
-    # For workspace scoring, copy the per-model workspace's mcp_gateway
-    # package into workspace/mcp_gateway/ so the existing module path
-    # (workspace.mcp_gateway.main:app) resolves to the model's code.
+    # For workspace scoring, determine the model workspace path.
+    model_workspace = None
     if target == "workspace":
         if not model_safe:
             print(
@@ -307,7 +306,6 @@ def cmd_score(args) -> int:
         if run_timestamp:
             model_workspace = APP / "workspace" / f"{model_safe}_{run_timestamp}" / "mcp_gateway"
         else:
-            # Auto-pick the latest timestamped workspace for this model.
             latest_path = _find_latest_run_workspace(model_safe)
             if latest_path is None:
                 print(
@@ -318,58 +316,14 @@ def cmd_score(args) -> int:
                 return 1
             model_workspace = latest_path / "mcp_gateway"
             print(f"[INFO] Auto-selected latest run workspace: {latest_path}")
-        target_workspace = APP / "workspace" / "mcp_gateway"
         if not model_workspace.exists():
             print(
                 f"[FAIL] Model workspace not found: {model_workspace}",
                 file=sys.stderr,
             )
             return 1
-        if target_workspace.exists():
-            shutil.rmtree(target_workspace)
-        shutil.copytree(model_workspace, target_workspace)
 
-    # The harness provides the runtime config file (per the task spec, actual
-    # API keys and allowlists are set by the evaluation harness). Write it to
-    # the repo root so the gateway's config loader finds it at
-    # ./config/gateway.yaml — uvicorn and pytest both run with cwd=repo root
-    # on the host, and /app/config/gateway.yaml does not exist on Windows.
-    server_prefix = "reference.mcp_gateway" if target == "reference" else "mcp_gateway"
-    config_yaml = f"""gateway:
-  host: "0.0.0.0"
-  port: 8000
-  request_max_bytes: 1048576
-  rate_limit_per_minute: 60
-  concurrency_limit: 10
-  execution_timeout_seconds: 30
-  gateway_timeout_seconds: 35
-
-servers:
-  documents:
-    command: ["python", "-m", {server_prefix}.servers.documents"]
-  jobs:
-    command: ["python", "-m", {server_prefix}.servers.jobs"]
-
-clients:
-  client_a:
-    api_key: "key-a-123"
-    allowlist: ["documents.search_documents", "documents.get_document"]
-  client_b:
-    api_key: "key-b-456"
-    allowlist: ["jobs.execute_job", "jobs.get_job_status"]
-  client_admin:
-    api_key: "key-admin-789"
-    allowlist: ["documents.search_documents", "documents.get_document", "jobs.execute_job", "jobs.get_job_status"]
-"""
-
-    config_dir = APP / "config"
-    config_dir.mkdir(exist_ok=True)
-    config_path = config_dir / "gateway.yaml"
-    config_path.write_text(config_yaml, encoding="utf-8")
-    print(f"[INFO] Wrote harness config to {config_path}", flush=True)
-
-    # Ensure the Docker image is built, then start the gateway inside Docker
-    # via app-setup/start.sh so the verifier can interact with it over HTTP.
+    # Ensure the Docker image is built.
     if not _image_exists():
         print("[INFO] Docker image not found; building it now...")
         rc = _build_image()
@@ -382,10 +336,28 @@ clients:
         if target == "reference"
         else "workspace.mcp_gateway.main:app"
     )
+
+    # 1) build.sh - prepare the model solution (copy code, write config)
+    build_script = repo_root / "app-setup" / "build.sh"
+    build_env = os.environ.copy()
+    build_env["WORKSPACE_HOST"] = str(repo_root)
+    model_ws_arg = str(model_workspace) if model_workspace else ""
+    print(f"[INFO] Running build.sh for target={target}...", flush=True)
+    subprocess.run(
+        ["bash", str(build_script), target, model_ws_arg],
+        cwd=str(repo_root),
+        env=build_env,
+        check=True,
+        timeout=60,
+    )
+
+    # 2) start.sh - start the gateway inside Docker
     start_script = repo_root / "app-setup" / "start.sh"
     start_env = os.environ.copy()
     start_env["WORKSPACE_HOST"] = str(repo_root)
     start_env["GATEWAY_MODULE"] = gateway_module
+    start_env["IMAGE_NAME"] = "secure-mcp-gateway"
+    start_env["TAG"] = "latest"
 
     print(f"[INFO] Starting gateway in Docker (target={target})...", flush=True)
     subprocess.run(
@@ -410,7 +382,7 @@ clients:
         output = proc.stdout + proc.stderr
         results = parse_pytest_results(output)
     finally:
-        # Stop the gateway container.
+        # 3) reset.sh - stop container and clear state
         reset_script = repo_root / "app-setup" / "reset.sh"
         reset_env = os.environ.copy()
         reset_env["WORKSPACE_HOST"] = str(repo_root)
@@ -536,8 +508,8 @@ def cmd_check_mutants() -> int:
     return 0
 
 
-SANDBOX_IMAGE = "secure-mcp-gateway:sandbox"
-SANDBOX_CONTAINER = "secure-mcp-gateway-sandbox"
+SANDBOX_IMAGE = "secure-mcp-gateway:latest"
+SANDBOX_CONTAINER = "secure-mcp-gateway"
 
 
 def _ensure_openhands_installed() -> int:
@@ -570,11 +542,10 @@ def _ensure_openhands_installed() -> int:
 
 def _build_image(max_retries: int = 3, backoff_seconds: int = 10,
                  timeout_seconds: int = 300) -> int:
-    """Build the Docker sandbox image with retries and backoff.
+    """Build the sandbox Docker image (minimal, for generate).
 
-    The sandbox image is minimal — just Python + curl. No PyPI installs
-    (no openhands-sdk, no litellm), so builds should complete in seconds
-    rather than timing out on slow PyPI connections.
+    Builds from environment/Dockerfile — Python + curl only, no PyPI installs.
+    Tagged secure-mcp-gateway:sandbox.
     """
     build_cmd = [
         "docker", "build",

@@ -28,6 +28,7 @@ docker run -d \
     --publish 9001:9001 \
     --publish 9002:9002 \
     -v "${WORKSPACE_HOST}:/workspace" \
+    -v "${WORKSPACE_HOST}/config/gateway.yaml:/app/config/gateway.yaml" \
     -w /workspace \
     -e GATEWAY_MODULE="${GATEWAY_MODULE}" \
     -e PYTHONPATH=/workspace \
