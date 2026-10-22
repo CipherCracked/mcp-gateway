@@ -368,10 +368,32 @@ clients:
     config_path.write_text(config_yaml, encoding="utf-8")
     print(f"[INFO] Wrote harness config to {config_path}", flush=True)
 
+    # Ensure the Docker image is built, then start the gateway inside Docker
+    # via app-setup/start.sh so the verifier can interact with it over HTTP.
+    if not _image_exists():
+        print("[INFO] Docker image not found; building it now...")
+        rc = _build_image()
+        if rc != 0:
+            return 1
+
+    repo_root = APP
     gateway_module = (
         "reference.mcp_gateway.main:app"
         if target == "reference"
         else "workspace.mcp_gateway.main:app"
+    )
+    start_script = repo_root / "app-setup" / "start.sh"
+    start_env = os.environ.copy()
+    start_env["WORKSPACE_HOST"] = str(repo_root)
+    start_env["GATEWAY_MODULE"] = gateway_module
+
+    print(f"[INFO] Starting gateway in Docker (target={target})...", flush=True)
+    subprocess.run(
+        ["bash", str(start_script), target],
+        cwd=str(repo_root),
+        env=start_env,
+        check=True,
+        timeout=120,
     )
 
     env = os.environ.copy()
@@ -383,9 +405,20 @@ clients:
     print(f"[INFO] Started at: {datetime.now(timezone.utc).isoformat()}", flush=True)
     started_at = time.time()
 
-    proc = run_pytest([str(TESTS_DIR)], env=env, stream=True)
-    output = proc.stdout + proc.stderr
-    results = parse_pytest_results(output)
+    try:
+        proc = run_pytest([str(TESTS_DIR)], env=env, stream=True)
+        output = proc.stdout + proc.stderr
+        results = parse_pytest_results(output)
+    finally:
+        # Stop the gateway container.
+        reset_script = repo_root / "app-setup" / "reset.sh"
+        reset_env = os.environ.copy()
+        reset_env["WORKSPACE_HOST"] = str(repo_root)
+        subprocess.run(
+            ["bash", str(reset_script)],
+            cwd=str(repo_root),
+            env=reset_env,
+        )
 
     elapsed = time.time() - started_at
     print(f"[INFO] Test suite completed in {elapsed:.1f}s", flush=True)

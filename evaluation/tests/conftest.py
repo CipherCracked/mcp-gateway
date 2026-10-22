@@ -1,6 +1,6 @@
 """Shared fixtures and helpers for the Secure MCP Gateway verifier suite.
 
-The gateway is started once per session as a subprocess (uvicorn on port 8000).
+The gateway is started once per session inside Docker via app-setup/start.sh.
 Its lifespan spawns the two upstream MCP fixture servers as child processes.
 Tests drive the gateway over HTTP and control fixture behavior through the
 fixture servers' test-only HTTP control endpoints (documents:9001, jobs:9002).
@@ -9,11 +9,9 @@ The gateway itself never calls the control endpoints — only the tests do.
 """
 
 import os
-import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable
 
 import httpx
 import pytest
@@ -29,18 +27,6 @@ API_KEY_B = "key-b-456"
 BAD_KEY = "definitely-not-a-valid-key"
 
 GATEWAY_MODULE = os.environ.get("GATEWAY_MODULE", "reference.mcp_gateway.main:app")
-
-
-def _kill_process_tree(pid: int) -> None:
-    """Kill a process and all its descendants (Windows: taskkill /T)."""
-    try:
-        subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(pid)],
-            capture_output=True,
-            timeout=5,
-        )
-    except Exception:
-        pass
 
 
 def _free_port(port: int) -> None:
@@ -103,88 +89,42 @@ def crash_jobs() -> httpx.Response:
 
 @pytest.fixture(scope="session")
 def gateway_process():
-    """Start the gateway (uvicorn) once per session and tear it down at the end."""
+    """Start the gateway inside Docker via app-setup/start.sh."""
 
     # Free the ports the gateway and its upstream fixtures bind so stale
     # processes from a previous run can't steal control-endpoint traffic
-    # (delay / fail_next / crash) away from the live children — this is what
-    # made tests flaky across runs on Windows (SO_REUSEADDR port sharing).
+    # (delay / fail_next / crash) away from the live children.
     for port in (8000, 9001, 9002):
         _free_port(port)
 
-    # Clean stale execution DB from previous runs so recovery tests start fresh.
-    db_path = Path("/app/data/executions.db")
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(db_path) + suffix)
-        if p.exists():
-            try:
-                p.unlink()
-            except Exception:
-                pass
+    # Determine target from GATEWAY_MODULE env var.
+    gateway_module = os.environ.get("GATEWAY_MODULE", "reference.mcp_gateway.main:app")
+    target = "reference" if gateway_module.startswith("reference.") else "workspace"
+
+    repo_root = Path(__file__).resolve().parents[2]
+    start_script = repo_root / "app-setup" / "start.sh"
 
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
-    proc = subprocess.Popen(
-        ["uvicorn", GATEWAY_MODULE, "--host", "0.0.0.0", "--port", "8000"],
-        cwd=str(Path(__file__).resolve().parents[2]),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    env["WORKSPACE_HOST"] = str(repo_root)
+
+    # Start the gateway inside Docker. start.sh waits for readiness internally.
+    subprocess.run(
+        ["bash", str(start_script), target],
+        cwd=str(repo_root),
         env=env,
+        check=True,
+        timeout=120,
     )
 
-    deadline = time.time() + 30
-    ready = False
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            out, err = proc.communicate()
-            out_text = out.decode(errors="replace") if out is not None else "<no stdout (DEVNULL)>"
-            err_text = err.decode(errors="replace") if err is not None else ""
-            raise RuntimeError(
-                f"Gateway exited early (code {proc.returncode}):\n"
-                f"stdout: {out_text}\n"
-                f"stderr: {err_text}"
-            )
-        try:
-            r = httpx.get(
-                f"{GATEWAY_URL}/tools/list",
-                headers={"x-api-key": API_KEY_ADMIN},
-                timeout=1.0,
-            )
-            if r.status_code == 200:
-                ready = True
-                break
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
-            pass
-        time.sleep(0.25)
+    yield None
 
-    if not ready:
-        _kill_process_tree(proc.pid)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        raise RuntimeError("Gateway did not become ready within 30s")
-
-    yield proc
-
-    # Kill the session gateway.
-    _kill_process_tree(proc.pid)
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-    # Also clean up any replacement gateway started by the persistence test.
-    replacement = getattr(proc, "_replacement_proc", None)
-    if replacement is not None:
-        _kill_process_tree(replacement.pid)
-        replacement.terminate()
-        try:
-            replacement.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            replacement.kill()
+    # Stop and remove the container.
+    reset_script = repo_root / "app-setup" / "reset.sh"
+    subprocess.run(
+        ["bash", str(reset_script)],
+        cwd=str(repo_root),
+        env=env,
+    )
 
 
 @pytest.fixture
@@ -213,7 +153,7 @@ def auth_headers_b():
 def reset_limiters():
     """Reset rate limiters and concurrency limiters before each test for isolation.
 
-    The gateway runs as a subprocess, so its limiter objects are not directly
+    The gateway runs inside Docker, so its limiter objects are not directly
     accessible from the test process. We reset via the gateway's test-only
     HTTP endpoint (POST /_test/reset_limiters) so each test starts with a fresh
     token bucket and empty semaphores.
