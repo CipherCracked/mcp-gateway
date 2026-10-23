@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secure-mcp-gateway"
+version = "1.0.0"
+description = "A secure gateway aggregating MCP servers behind a REST API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "mcp",
+    "aiosqlite",
+    "pydantic>=2",
+    "pyyaml",
+    "httpx",
+]
+
+[tool.setuptools]
+packages = ["reference", "reference.mcp_gateway", "reference.mcp_gateway.servers", "reference.mcp_gateway.upstream"]

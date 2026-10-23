@@ -1,0 +1,31 @@
+# Secure MCP Gateway - Example Configuration
+
+# This file is an example. The verifier uses its own independent fixtures
+# and does NOT trust this file for assertions. Actual API keys and allowlists
+# are set by the evaluation harness and may differ from what is shown here.
+
+gateway:
+  host: "0.0.0.0"
+  port: 8000
+  request_max_bytes: 1048576
+  rate_limit_per_minute: 60
+  concurrency_limit: 10
+  execution_timeout_seconds: 30
+  gateway_timeout_seconds: 35
+
+servers:
+  documents:
+    command: ["python", "-m", "reference.mcp_gateway.servers.documents"]
+  jobs:
+    command: ["python", "-m", "reference.mcp_gateway.servers.jobs"]
+
+clients:
+  client_a:
+    api_key: "<api-key-a>"
+    allowlist: ["documents.search_documents", "documents.get_document"]
+  client_b:
+    api_key: "<api-key-b>"
+    allowlist: ["jobs.execute_job", "jobs.get_job_status"]
+  client_admin:
+    api_key: "<api-key-admin>"
+    allowlist: ["documents.search_documents", "documents.get_document", "jobs.execute_job", "jobs.get_job_status"]
