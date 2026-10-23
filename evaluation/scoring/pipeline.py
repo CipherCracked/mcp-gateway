@@ -47,6 +47,18 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def get_reasoning_effort() -> str:
+    """Get reasoning_effort from agent config (evaluation/scoring/config.yml)."""
+    config_path = APP / "evaluation" / "scoring" / "config.yml"
+    if not config_path.exists():
+        return "medium"
+    try:
+        cfg = load_yaml(config_path)
+        return cfg.get("agent", {}).get("reasoning_effort", "medium")
+    except Exception:
+        return "medium"
+
+
 def get_reproducibility_metadata() -> dict:
     """Collect metadata for reproducible evaluation runs."""
     import openhands.sdk as _oh_sdk  # noqa: F401
@@ -353,13 +365,14 @@ def cmd_score(args) -> int:
                 file=sys.stderr,
             )
             return 1
+        effort = get_reasoning_effort()
         if run_timestamp:
-            model_workspace = APP / "workspace" / f"{model_safe}_{run_timestamp}" / "mcp_gateway"
+            model_workspace = APP / "workspace" / f"{model_safe}_{effort}_{run_timestamp}" / "mcp_gateway"
         else:
-            latest_path = _find_latest_run_workspace(model_safe)
+            latest_path = _find_latest_run_workspace(model_safe, effort)
             if latest_path is None:
                 print(
-                    f"[FAIL] No timestamped workspace found for model '{model_safe}'. "
+                    f"[FAIL] No timestamped workspace found for model '{model_safe}' with effort '{effort}'. "
                     f"Specify --run <timestamp> or run generate first.",
                     file=sys.stderr,
                 )
@@ -476,7 +489,8 @@ def cmd_score(args) -> int:
 
     # Save workspace scoring results to proof-of-work
     if target == "workspace" and model_safe:
-        proof_dir = EVAL / "proof-of-work" / model_safe
+        effort = get_reasoning_effort()
+        proof_dir = EVAL / "proof-of-work" / f"{model_safe}_{effort}"
         proof_dir.mkdir(parents=True, exist_ok=True)
         run_id = run_timestamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         proof_file = proof_dir / f"score_{run_id}.json"
@@ -793,10 +807,11 @@ def _make_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
-def _find_latest_run_workspace(model_safe: str) -> Path | None:
+def _find_latest_run_workspace(model_safe: str, effort: str | None = None) -> Path | None:
     """Find the most recent timestamped workspace directory for a model.
 
-    Looks for directories matching ``workspace/<model_safe>_<timestamp>``
+    Looks for directories matching ``workspace/<model_safe>_<effort>_<timestamp>``
+    (if effort provided) or ``workspace/<model_safe>_<timestamp>`` (legacy)
     and returns the one with the latest timestamp, or None if none exist.
     Only timestamped directories are considered — there is no fallback to
     pre-timestamping plain directories.
@@ -805,7 +820,10 @@ def _find_latest_run_workspace(model_safe: str) -> Path | None:
     if not workspace_root.exists():
         return None
 
-    prefix = f"{model_safe}_"
+    if effort:
+        prefix = f"{model_safe}_{effort}_"
+    else:
+        prefix = f"{model_safe}_"
     candidates: list[tuple[str, Path]] = []
     for child in workspace_root.iterdir():
         if not child.is_dir():
@@ -829,13 +847,13 @@ def cmd_generate(args) -> int:
     """Generate a solution by running OpenHands headless on the host.
 
     Copies task/public/ to a per-model workspace under
-    workspace/<model-name>_<timestamp>/, starts a Docker sandbox container
+    workspace/<model-name>_<effort>_<timestamp>/, starts a Docker sandbox container
     with only /workspace mounted, then runs the OpenHands SDK agent on the
     host. The agent's file tools read/write the mounted workspace, and its
     shell commands execute inside the container via ``docker exec``.
     The agent never sees evaluation/ or reference/.
 
-    Saves logs to evaluation/proof-of-work/<model-name>/run.log.
+    Saves logs to evaluation/proof-of-work/<model-name>_<effort>/run.log.
     """
     model = (
         args.model
@@ -843,17 +861,18 @@ def cmd_generate(args) -> int:
         or "openrouter/nvidia/nemotron-3.5-lightning:free"
     )
     model_safe = model.replace("/", "_").replace(":", "_").replace("-", "_")
+    effort = get_reasoning_effort()
     timestamp = _make_timestamp()
 
-    proof_dir = EVAL / "proof-of-work" / model_safe
+    proof_dir = EVAL / "proof-of-work" / f"{model_safe}_{effort}"
     proof_dir.mkdir(parents=True, exist_ok=True)
 
     # Fresh per-model, per-run workspace from public materials only (never
     # reference/ or evaluation/). Timestamping lets us run the same model
     # multiple times without overwriting previous runs.
-    # Lives at workspace/<model-name>_<timestamp>/ at repo root so the
+    # Lives at workspace/<model-name>_<effort>_<timestamp>/ at repo root so the
     # scoring step can import workspace.mcp_gateway.main:app.
-    workspace = APP / "workspace" / f"{model_safe}_{timestamp}"
+    workspace = APP / "workspace" / f"{model_safe}_{effort}_{timestamp}"
 
     # Stop any leftover sandbox container from a previous run so the host
     # can clean up the workspace directory (Docker volume mount locks files
