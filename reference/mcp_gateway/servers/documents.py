@@ -23,7 +23,8 @@ import mcp.types as types
 
 _control_state = {
     "fail_next_mode": None,   # "exception" | "mcp_error" | None
-    "delay_seconds": 0.0,
+    "delay_seconds": 0.0,     # seconds to delay the next N calls
+    "pending_delays": 0,      # how many calls remain to be delayed
 }
 
 
@@ -54,7 +55,15 @@ class ControlHandler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, ValueError):
                 data = {}
             seconds = float(data.get("seconds", 0))
-            _control_state["delay_seconds"] = seconds
+            count = int(data.get("count", 1))
+            if seconds > 0:
+                _control_state["delay_seconds"] = seconds
+                _control_state["pending_delays"] = _control_state.get("pending_delays", 0) + count
+            else:
+                # seconds == 0 clears any queued delay state (used by test fixtures
+                # to reset control state between tests).
+                _control_state["delay_seconds"] = 0.0
+                _control_state["pending_delays"] = 0
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -76,7 +85,7 @@ class _ReusableHTTPServer(ThreadingHTTPServer):
 
 def start_control_port(port: int):
     """Start the HTTP control server on a daemon thread."""
-    httpd = _ReusableHTTPServer(("127.0.0.1", port), ControlHandler)
+    httpd = _ReusableHTTPServer(("0.0.0.0", port), ControlHandler)
     thread = Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd
@@ -121,9 +130,14 @@ async def list_tools():
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     # Apply queued delay before doing work
-    delay = _control_state.pop("delay_seconds", 0.0)
-    if delay > 0:
-        await asyncio.sleep(delay)
+    pending = _control_state.get("pending_delays", 0)
+    if pending > 0:
+        _control_state["pending_delays"] = pending - 1
+        delay = _control_state.get("delay_seconds", 0.0)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if _control_state["pending_delays"] == 0:
+            _control_state["delay_seconds"] = 0.0
 
     # Apply queued failure mode
     mode = _control_state.pop("fail_next_mode", None)

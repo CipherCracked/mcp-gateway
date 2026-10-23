@@ -1,102 +1,123 @@
-"""Rate limiting and concurrency management for the gateway."""
+"""Rate limiting (token bucket) and per-client concurrency limits."""
+
+from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, Optional
+from dataclasses import dataclass, field
 
 
+@dataclass
 class TokenBucket:
-    """Token bucket rate limiter per client."""
+    """A continuously refilling token bucket.
 
-    def __init__(self, capacity: int, refill_rate_per_second: float):
-        self.capacity = capacity
-        self.refill_rate = refill_rate_per_second
-        self.tokens = float(capacity)
-        self.last_refill = time.monotonic()
-        self._lock = asyncio.Lock()
+    The bucket starts full, holds ``capacity`` tokens and refills at
+    ``capacity / 60`` tokens per second (one minute's worth of requests).
+    """
 
-    async def acquire(self) -> bool:
-        """Try to acquire a token. Returns True if successful, False if rate limited."""
+    capacity: float
+    refill_per_second: float
+    tokens: float = field(init=False)
+    updated_at: float = field(init=False)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.tokens = float(self.capacity)
+        self.updated_at = time.monotonic()
+
+    def _refill(self, now: float) -> None:
+        elapsed = now - self.updated_at
+        if elapsed <= 0:
+            return
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_per_second)
+        self.updated_at = now
+
+    async def consume(self, amount: float = 1.0) -> bool:
+        """Try to take ``amount`` tokens; ``False`` when the bucket is empty."""
         async with self._lock:
-            self._refill()
-            if self.tokens >= 1.0:
-                self.tokens -= 1.0
+            self._refill(time.monotonic())
+            if self.tokens >= amount:
+                self.tokens -= amount
                 return True
             return False
 
-    def _refill(self):
-        """Refill tokens based on elapsed time."""
-        now = time.monotonic()
-        elapsed = now - self.last_refill
-        self.tokens = min(
-            float(self.capacity),
-            self.tokens + elapsed * self.refill_rate
-        )
-        self.last_refill = now
-
-
-class ConcurrencyLimiter:
-    """Asyncio semaphore-based concurrency limiter per client."""
-
-    def __init__(self, limit: int):
-        self.limit = limit
-        self.semaphore = asyncio.Semaphore(limit)
-
-    async def acquire_nonblocking(self) -> bool:
-        """Non-blocking acquire. Returns True if slot available, False if at limit."""
-        try:
-            await asyncio.wait_for(self.semaphore.acquire(), timeout=0)
-            return True
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            # Release back if we somehow got it
-            if not self.semaphore.locked() or self.semaphore._value < 0:
-                self.semaphore.release()
-            return False
-
-    def release(self):
-        """Release a concurrency slot."""
-        self.semaphore.release()
+    async def available(self) -> float:
+        async with self._lock:
+            self._refill(time.monotonic())
+            return self.tokens
 
 
 class RateLimiter:
-    """Token bucket rate limiter per client."""
+    """Per-client token buckets."""
 
-    def __init__(self, capacity: int, refill_rate_per_second: float):
-        self.bucket = TokenBucket(capacity, refill_rate_per_second)
+    def __init__(self, requests_per_minute: int) -> None:
+        self.requests_per_minute = max(1, int(requests_per_minute))
+        self._buckets: dict[str, TokenBucket] = {}
 
-    async def check_and_acquire(self) -> bool:
-        """Check rate limit and acquire token. Returns True if allowed, False if rate limited."""
-        return await self.bucket.acquire()
+    def _bucket(self, client_id: str) -> TokenBucket:
+        bucket = self._buckets.get(client_id)
+        if bucket is None:
+            capacity = float(self.requests_per_minute)
+            bucket = TokenBucket(capacity=capacity, refill_per_second=capacity / 60.0)
+            self._buckets[client_id] = bucket
+        return bucket
 
-    def release(self):
-        """Release a token (for manual refill control)."""
-        self.bucket._refill()
-        self.bucket.tokens = min(
-            float(self.bucket.capacity),
-            self.bucket.tokens + 1.0
-        )
+    async def allow(self, client_id: str) -> bool:
+        """Consume one token for ``client_id``."""
+        # Dict access is atomic with respect to the event loop, so no lock is
+        # needed to create a bucket safely.
+        return await self._bucket(client_id).consume(1.0)
+
+    async def reset(self, client_id: str | None = None) -> None:
+        if client_id is None:
+            self._buckets.clear()
+        else:
+            self._buckets.pop(client_id, None)
 
 
-class ConcurrencyManager:
-    """Per-client concurrency manager using asyncio semaphores."""
+class ConcurrencyLimiter:
+    """Per-client limit on simultaneously running executions.
 
-    def __init__(self, default_limit: int):
-        self.default_limit = default_limit
-        self.clients: Dict[str, ConcurrencyLimiter] = {}
-        self._lock = asyncio.Lock()
+    Each client owns a counter of in-flight executions.  Admission is a
+    non-blocking check: when the limit is already reached the caller is
+    rejected immediately instead of waiting.
+    """
 
-    async def get_limiter(self, client_id: str) -> ConcurrencyLimiter:
-        async with self._lock:
-            if client_id not in self.clients:
-                self.clients[client_id] = ConcurrencyLimiter(self.default_limit)
-            return self.clients[client_id]
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, int(limit))
+        self._in_flight: dict[str, int] = {}
+
+    def _count(self, client_id: str) -> int:
+        return self._in_flight.get(client_id, 0)
 
     async def try_acquire(self, client_id: str) -> bool:
-        """Try to acquire concurrency slot for client. Non-blocking."""
-        limiter = await self.get_limiter(client_id)
-        return await limiter.acquire_nonblocking()
+        """Non-blocking admission check.
 
-    def release(self, client_id: str):
-        """Release concurrency slot for client."""
-        if client_id in self.clients:
-            self.clients[client_id].release()
+        Returns ``True`` when a slot was taken, ``False`` when the client
+        already runs the maximum number of executions.
+        """
+        if self._count(client_id) >= self.limit:
+            return False
+        # No await between the check and the increment, so the admission is
+        # atomic with respect to other coroutines on this event loop.
+        self._in_flight[client_id] = self._count(client_id) + 1
+        return True
+
+    async def release(self, client_id: str) -> None:
+        """Return a slot to the client, never going below zero."""
+        count = self._count(client_id)
+        if count <= 0:
+            return
+        if count == 1:
+            self._in_flight.pop(client_id, None)
+        else:
+            self._in_flight[client_id] = count - 1
+
+    async def in_flight(self, client_id: str) -> int:
+        return self._count(client_id)
+
+    async def reset(self, client_id: str | None = None) -> None:
+        if client_id is None:
+            self._in_flight.clear()
+        else:
+            self._in_flight.pop(client_id, None)

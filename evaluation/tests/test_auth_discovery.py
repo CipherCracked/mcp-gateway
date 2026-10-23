@@ -1,6 +1,6 @@
 """Authentication and tool discovery tests (REQ AUTH-001, AUTH-002, DISC-001)."""
 
-from tests.conftest import (
+from evaluation.tests.conftest import (
     API_KEY_ADMIN, API_KEY_A, API_KEY_B, BAD_KEY,
 )
 

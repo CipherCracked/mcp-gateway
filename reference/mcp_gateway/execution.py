@@ -173,13 +173,20 @@ class ExecutionManager:
                 updated_at=time.monotonic(),
             )
         except asyncio.CancelledError:
-            await self.store.update_state(
-                execution_id,
-                "cancelled",
-                error_code="RESULT_UNAVAILABLE",
-                error_message="Execution cancelled by client",
-                updated_at=time.monotonic(),
-            )
+            # Check if client explicitly cancelled (state already set to "cancelled")
+            record = await self.store.get(execution_id)
+            if record and record["state"] == "cancelled":
+                # Client-initiated cancellation already recorded; don't overwrite
+                pass
+            else:
+                # Gateway shutdown or other interruption - mark as interrupted
+                await self.store.update_state(
+                    execution_id,
+                    "failed",
+                    error_code="EXECUTION_INTERRUPTED",
+                    error_message="Execution was interrupted by gateway restart",
+                    updated_at=time.monotonic(),
+                )
         except Exception as exc:  # noqa: BLE001 - unexpected gateway error
             await self.store.update_state(
                 execution_id,

@@ -139,4 +139,4 @@ sanitization:
 global:
   - id: GEN-001
     description: All error responses follow {"error","code",details?} format
-    test: tests/test_error_codes (covered across all test files)
+    test: evaluation/tests/test_error_codes.py::TestErrorCodes

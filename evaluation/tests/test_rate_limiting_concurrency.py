@@ -2,7 +2,7 @@
 
 import concurrent.futures
 
-from tests.conftest import API_KEY_ADMIN, delay_jobs
+from evaluation.tests.conftest import API_KEY_ADMIN, delay_jobs
 
 
 class TestRateLimiting:
@@ -59,5 +59,5 @@ class TestConcurrency:
 
         # Let the delayed executions complete so slots are released.
         for exec_id in exec_ids:
-            from tests.conftest import wait_for_state
+            from evaluation.tests.conftest import wait_for_state
             wait_for_state(client, exec_id, auth_headers_admin, {"completed", "failed"})

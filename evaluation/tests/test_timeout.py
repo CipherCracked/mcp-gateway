@@ -6,7 +6,7 @@ the execution is marked failed with EXECUTION_TIMEOUT.
 
 import time
 
-from tests.conftest import API_KEY_ADMIN, delay_documents, wait_for_state
+from evaluation.tests.conftest import API_KEY_ADMIN, delay_documents, wait_for_state
 
 
 class TestTimeout:

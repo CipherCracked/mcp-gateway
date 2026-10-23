@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from tests.conftest import (
+from evaluation.tests.conftest import (
     API_KEY_ADMIN,
     crash_jobs, fail_next_jobs,
     wait_for_state,

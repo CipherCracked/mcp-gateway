@@ -315,6 +315,7 @@ async def execution_result(execution_id: str, request: Request):
     if _exec_manager is None:
         raise RuntimeError("Gateway not initialized")
     record = await _exec_manager.get_result(execution_id, client_id)
+    _check_execution_permission(record, client_id)
 
     response = ExecutionResultResponse(
         execution_id=execution_id,

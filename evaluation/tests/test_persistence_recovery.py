@@ -4,37 +4,37 @@ Terminal states survive gateway restart; non-terminal states become
 EXECUTION_INTERRUPTED. Authorization still applies after restart.
 """
 
-import os
-import signal
 import subprocess
 import time
-from pathlib import Path
 
 import httpx
 
-from tests.conftest import (
+from evaluation.tests.conftest import (
     API_KEY_ADMIN, GATEWAY_URL, delay_documents,
-    wait_for_state, _kill_process_tree,
+    wait_for_state,
 )
 
 
-def _start_gateway():
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
-    return subprocess.Popen(
-        ["uvicorn", "reference.mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"],
-        cwd=str(Path(__file__).resolve().parents[2]),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+CONTAINER_NAME = "secure-mcp-gateway"
+DOCKER_EXE = r"C:\Program Files\Docker\Docker\resources\bin\docker.exe"
 
 
-def _wait_ready(proc, timeout=20.0):
-    deadline = time.time() + timeout
+def _run_docker(*args, **kwargs):
+    """Run docker command via PowerShell to ensure Docker Desktop context."""
+    cmd = ["powershell", "-Command", f"& '{DOCKER_EXE}' {' '.join(args)}"]
+    return subprocess.run(cmd, **kwargs)
+
+
+def _restart_gateway_container():
+    """Restart the gateway Docker container."""
+    # Restart the container
+    result = _run_docker("restart", CONTAINER_NAME, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to restart container: {result.stderr}")
+
+    # Wait for gateway to be ready
+    deadline = time.time() + 30.0
     while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError("gateway died during restart")
         try:
             r = httpx.get(
                 f"{GATEWAY_URL}/tools/list",
@@ -43,15 +43,15 @@ def _wait_ready(proc, timeout=20.0):
             )
             if r.status_code == 200:
                 return True
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError):
             pass
-        time.sleep(0.25)
-    raise RuntimeError("gateway did not become ready after restart")
+        time.sleep(0.5)
+    raise RuntimeError("gateway did not become ready after container restart")
 
 
 class TestPersistenceRecovery:
     def test_terminal_states_survive_restart_non_terminal_interrupted(
-        self, client, auth_headers_admin, gateway_process
+        self, client, auth_headers_admin
     ):
         # E1: delayed so it is non-terminal (pending/running) at restart time.
         delay_documents(6.0)
@@ -74,45 +74,20 @@ class TestPersistenceRecovery:
         # Give E1 a moment to be running.
         time.sleep(0.5)
 
-        # Restart the gateway.
-        _kill_process_tree(gateway_process.pid)
-        gateway_process.terminate()
-        try:
-            gateway_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            gateway_process.kill()
-        new_proc = _start_gateway()
-        try:
-            _wait_ready(new_proc)
+        # Restart the gateway by restarting the Docker container.
+        _restart_gateway_container()
 
-            # E2 (terminal) recovered faithfully.
+        # E2 (terminal) recovered faithfully.
+        record = wait_for_state(
+            httpx.Client(base_url=GATEWAY_URL, timeout=10.0),
+            e2, auth_headers_admin, {"completed"},
+        )
+        assert record["state"] == "completed"
+
+        # E1 (non-terminal) marked failed with EXECUTION_INTERRUPTED.
+        with httpx.Client(base_url=GATEWAY_URL, timeout=10.0) as c2:
             record = wait_for_state(
-                httpx.Client(base_url=GATEWAY_URL, timeout=10.0),
-                e2, auth_headers_admin, {"completed"},
+                c2, e1, auth_headers_admin, {"failed"}, timeout=10.0
             )
-            assert record["state"] == "completed"
-
-            # E1 (non-terminal) marked failed with EXECUTION_INTERRUPTED.
-            with httpx.Client(base_url=GATEWAY_URL, timeout=10.0) as c2:
-                record = wait_for_state(
-                    c2, e1, auth_headers_admin, {"failed"}, timeout=10.0
-                )
-                assert record["state"] == "failed"
-                assert record["error"]["code"] == "EXECUTION_INTERRUPTED"
-        finally:
-            new_proc.terminate()
-            try:
-                new_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                new_proc.kill()
-
-            # Restart a gateway on port 8000 so subsequent tests (which use the
-            # session-scoped gateway_process fixture) still have a server to
-            # talk to. Track it so it can be cleaned up at session teardown.
-            replacement = _start_gateway()
-            try:
-                _wait_ready(replacement)
-            except RuntimeError:
-                pass  # best effort; if it fails, downstream tests will too
-            # Store replacement PID for the session fixture teardown to clean up.
-            gateway_process._replacement_proc = replacement
+            assert record["state"] == "failed"
+            assert record["error"]["code"] == "EXECUTION_INTERRUPTED"

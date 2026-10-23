@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-10-22T13:25:46.008480+00:00",
+  "total_mutants": 1,
+  "detected": 0,
+  "not_detected": 0,
+  "skipped": 0,
+  "detection_rate": 0.0,
+  "stdout": "\n============================================================\nTesting mutant: mut_auth_disabled\nOverlay: main.py\nTests: evaluation/tests/test_auth_discovery.py::TestAuthentication::test_missing_api_key_returns_401 evaluation/tests/test_auth_discovery.py::TestAuthentication::test_invalid_api_key_returns_401\n============================================================\n",
+  "stderr": "Traceback (most recent call last):\n  File \"D:\\Anirudh\\hackathons\\mcp-gateway\\test_mutants.py\", line 109, in <module>\n    main()\n    ~~~~^^\n  File \"D:\\Anirudh\\hackathons\\mcp-gateway\\test_mutants.py\", line 77, in main\n    exit_code, output = run_tests(test_spec)\n                        ~~~~~~~~~^^^^^^^^^^^\n  File \"D:\\Anirudh\\hackathons\\mcp-gateway\\test_mutants.py\", line 57, in run_tests\n    result = subprocess.run(\n        [sys.executable, \"-m\", \"pytest\", *test_args, \"-v\", \"--tb=short\"],\n    ...<3 lines>...\n        timeout=120,\n    )\n  File \"C:\\Users\\USER\\AppData\\Roaming\\uv\\python\\cpython-3.14-windows-x86_64-none\\Lib\\subprocess.py\", line 556, in run\n    stdout, stderr = process.communicate(input, timeout=timeout)\n                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\USER\\AppData\\Roaming\\uv\\python\\cpython-3.14-windows-x86_64-none\\Lib\\subprocess.py\", line 1220, in communicate\n    stdout, stderr = self._communicate(input, endtime, timeout)\n                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\USER\\AppData\\Roaming\\uv\\python\\cpython-3.14-windows-x86_64-none\\Lib\\subprocess.py\", line 1663, in _communicate\n    raise TimeoutExpired(self.args, orig_timeout)\nsubprocess.TimeoutExpired: Command '['D:\\\\Anirudh\\\\hackathons\\\\mcp-gateway\\\\.venv\\\\Scripts\\\\python.exe', '-m', 'pytest', 'evaluation/tests/test_auth_discovery.py::TestAuthentication::test_missing_api_key_returns_401', 'evaluation/tests/test_auth_discovery.py::TestAuthentication::test_invalid_api_key_returns_401', '-v', '--tb=short']' timed out after 120 seconds\n",
+  "pass": false
+}

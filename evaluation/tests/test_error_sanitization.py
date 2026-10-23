@@ -4,7 +4,7 @@ Client responses must never leak stack traces, internal paths, credentials,
 or fixture control port information.
 """
 
-from tests.conftest import BAD_KEY
+from evaluation.tests.conftest import BAD_KEY
 
 FORBIDDEN_SUBSTRINGS = [
     "Traceback",

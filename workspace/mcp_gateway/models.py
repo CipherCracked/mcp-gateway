@@ -1,79 +1,59 @@
-"""Pydantic models for requests and responses."""
+"""Pydantic request and response models for the gateway REST API."""
 
-from pydantic import BaseModel, Field, validator
-from typing import Optional, Dict, Any, List
+from __future__ import annotations
 
+from typing import Any
 
-class APIKeyModel(BaseModel):
-    """API key client configuration."""
-    api_key: str = Field(..., description="The client's API key")
-    allowlist: List[str] = Field(
-        ..., description="List of tool names the client is permitted to call"
-    )
-
-    @validator("api_key")
-    def api_key_not_empty(cls, v):
-        if not v or not v.strip():
-            raise ValueError("API key must not be empty")
-        return v.strip()
+from pydantic import BaseModel, Field
 
 
-class ToolInfo(BaseModel):
-    """Information about a registered tool."""
-    name: str = Field(..., description="Full tool name in {server}.{tool} format")
-    server: str = Field(..., description="Server name component")
-    tool: str = Field(..., description="Tool name component")
-    input_schema: Dict[str, Any] = Field(
-        ..., description="JSON Schema for tool arguments"
-    )
+class ToolCallRequest(BaseModel):
+    """Body of ``POST /tools/call``."""
+
+    tool: str = Field(..., description="Namespaced tool name, e.g. documents.search_documents")
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class ExecutionResult(BaseModel):
-    """Result for an execution."""
-    execution_id: str = Field(..., description="Unique execution ID")
-    state: str = Field(..., description="Execution state")
-    error: Optional[Dict[str, Any]] = Field(
-        None, description="Error details if state is failed/cancelled"
-    )
-    result: Optional[Dict[str, Any]] = Field(
-        None, description="Result data if state is completed"
-    )
+class ToolListResponse(BaseModel):
+    tools: list[str]
 
 
-class CallRequest(BaseModel):
-    """Request to call a tool."""
-    tool: str = Field(..., description="Tool name in {server}.{tool} format")
-    arguments: Dict[str, Any] = Field(
-        ..., description="Tool arguments"
-    )
-
-    @validator("tool")
-    def tool_must_have_dot(cls, v):
-        if "." not in v:
-            raise ValueError("Tool name must contain a dot (format: server.tool)")
-        return v
-
-    @validator("arguments")
-    def arguments_must_be_dict(cls, v):
-        if not isinstance(v, dict):
-            raise ValueError("Arguments must be a JSON object")
-        return v
-
-
-class StatusResponse(BaseModel):
-    """Response for execution status."""
-    execution_id: str
-    state: str
-    error: Optional[Dict[str, Any]] = None
-
-
-class CancelResponse(BaseModel):
-    """Response for execution cancellation."""
+class ToolCallAccepted(BaseModel):
     execution_id: str
     state: str
 
 
-class CallResponse(BaseModel):
-    """Response for tool call submission."""
+class ExecutionError(BaseModel):
+    code: str
+    message: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, str] | None) -> ExecutionError | None:
+        """Build an error model from a stored error payload."""
+        if not payload:
+            return None
+        return cls(code=payload.get("code", "INTERNAL"), message=payload.get("message", "Execution failed"))
+
+
+class ExecutionStatusResponse(BaseModel):
     execution_id: str
-    state: str = "pending"
+    state: str
+    error: ExecutionError | None = None
+
+
+class ExecutionResultResponse(BaseModel):
+    execution_id: str
+    state: str
+    result: Any = None
+    error: ExecutionError | None = None
+
+
+class ExecutionCancelResponse(BaseModel):
+    execution_id: str
+    state: str
+
+
+class ErrorResponse(BaseModel):
+    error: str
+    code: str
+    details: dict[str, Any] | None = None

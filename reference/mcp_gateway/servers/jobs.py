@@ -56,9 +56,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, ValueError):
                 data = {}
             seconds = float(data.get("seconds", 0))
+            count = int(data.get("count", 1))
             if seconds > 0:
                 _control_state["delay_seconds"] = seconds
-                _control_state["pending_delays"] = _control_state.get("pending_delays", 0) + 1
+                _control_state["pending_delays"] = _control_state.get("pending_delays", 0) + count
             else:
                 # seconds == 0 clears any queued delay state (used by test fixtures
                 # to reset control state between tests).
@@ -89,7 +90,7 @@ class _ReusableHTTPServer(ThreadingHTTPServer):
 
 def start_control_port(port: int):
     """Start the HTTP control server on a daemon thread."""
-    httpd = _ReusableHTTPServer(("127.0.0.1", port), ControlHandler)
+    httpd = _ReusableHTTPServer(("0.0.0.0", port), ControlHandler)
     thread = Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd

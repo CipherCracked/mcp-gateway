@@ -1,0 +1,291 @@
+{
+  "model": "openrouter/minimax/minimax-m3.1-flash-free",
+  "run_timestamp": "20261021_200405",
+  "timestamp": "2026-10-22T17:09:38.597139+00:00",
+  "reference_score": 0.16499999999999995,
+  "weights_sum": 1.0,
+  "frontier_ceiling": 0.3,
+  "passed": true,
+  "checks": [
+    {
+      "id": "AUTH-001",
+      "group": "authentication",
+      "weight": 0.05,
+      "status": "passed",
+      "earns_weight": true,
+      "check_score": 0.05
+    },
+    {
+      "id": "AUTH-002",
+      "group": "authentication",
+      "weight": 0.05,
+      "status": "passed",
+      "earns_weight": true,
+      "check_score": 0.05
+    },
+    {
+      "id": "AUTH-003",
+      "group": "authentication",
+      "weight": 0.02,
+      "status": "passed",
+      "earns_weight": true,
+      "check_score": 0.02
+    },
+    {
+      "id": "AUTHZ-001",
+      "group": "authorization",
+      "weight": 0.04,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "AUTHZ-002",
+      "group": "authorization",
+      "weight": 0.04,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "AUTHZ-003",
+      "group": "authorization",
+      "weight": 0.04,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "DISC-001",
+      "group": "discovery",
+      "weight": 0.05,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "DISC-002",
+      "group": "discovery",
+      "weight": 0.03,
+      "status": "passed",
+      "earns_weight": true,
+      "check_score": 0.03
+    },
+    {
+      "id": "INV-001",
+      "group": "invocation",
+      "weight": 0.05,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "INV-002",
+      "group": "invocation",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "VAL-001",
+      "group": "validation",
+      "weight": 0.015,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "VAL-002",
+      "group": "validation",
+      "weight": 0.015,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "VAL-003",
+      "group": "validation",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "VAL-004",
+      "group": "validation",
+      "weight": 0.015,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "VAL-005",
+      "group": "validation",
+      "weight": 0.015,
+      "status": "passed",
+      "earns_weight": true,
+      "check_score": 0.015
+    },
+    {
+      "id": "VAL-006",
+      "group": "validation",
+      "weight": 0.01,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIF-001",
+      "group": "lifecycle",
+      "weight": 0.025,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIF-002",
+      "group": "lifecycle",
+      "weight": 0.025,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIF-003",
+      "group": "lifecycle",
+      "weight": 0.015,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIF-004",
+      "group": "lifecycle",
+      "weight": 0.015,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIF-005",
+      "group": "lifecycle",
+      "weight": 0.01,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIM-001",
+      "group": "limits",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIM-002",
+      "group": "limits",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIM-003",
+      "group": "limits",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "LIM-004",
+      "group": "limits",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "FAIL-001",
+      "group": "failure_modes",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "FAIL-002",
+      "group": "failure_modes",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "FAIL-003",
+      "group": "failure_modes",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "PERS-001",
+      "group": "persistence",
+      "weight": 0.04,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "PERS-002",
+      "group": "persistence",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "REV-001",
+      "group": "revocation",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "REV-002",
+      "group": "revocation",
+      "weight": 0.03,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "REV-003",
+      "group": "revocation",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "SAN-001",
+      "group": "sanitization",
+      "weight": 0.08,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    },
+    {
+      "id": "GEN-001",
+      "group": "global",
+      "weight": 0.02,
+      "status": "failed",
+      "earns_weight": false,
+      "check_score": 0.0
+    }
+  ]
+}

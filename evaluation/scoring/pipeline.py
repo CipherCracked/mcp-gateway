@@ -39,7 +39,7 @@ EVAL = APP / "evaluation"
 SCORING_YML = EVAL / "scoring.yml"
 ACCEPTANCE_YML = EVAL / "acceptance-criteria.yml"
 TESTS_DIR = EVAL / "tests"
-MUTANTS_SCRIPT = APP / "test_mutants.py"
+MUTANTS_SCRIPT = EVAL / "tests" / "test_mutants.py"
 
 
 def load_yaml(path: Path) -> dict:
@@ -331,39 +331,30 @@ def cmd_score(args) -> int:
             return 1
 
     repo_root = APP
+
+    # 1) build.py - prepare the model solution (copy code, write config)
+    build_script = repo_root / "app-setup" / "build.py"
+    model_ws_arg = str(model_workspace) if model_workspace else ""
+    print(f"[INFO] Running build.py for target={target}...", flush=True)
+    subprocess.run(
+        [sys.executable, str(build_script), target, model_ws_arg],
+        cwd=str(repo_root),
+        check=True,
+        timeout=60,
+    )
+
+    # 2) start.py - start the gateway inside Docker
+    start_script = repo_root / "app-setup" / "start.py"
     gateway_module = (
         "reference.mcp_gateway.main:app"
         if target == "reference"
         else "workspace.mcp_gateway.main:app"
     )
 
-    # 1) build.sh - prepare the model solution (copy code, write config)
-    build_script = repo_root / "app-setup" / "build.sh"
-    build_env = os.environ.copy()
-    build_env["WORKSPACE_HOST"] = str(repo_root)
-    model_ws_arg = str(model_workspace) if model_workspace else ""
-    print(f"[INFO] Running build.sh for target={target}...", flush=True)
-    subprocess.run(
-        ["bash", str(build_script), target, model_ws_arg],
-        cwd=str(repo_root),
-        env=build_env,
-        check=True,
-        timeout=60,
-    )
-
-    # 2) start.sh - start the gateway inside Docker
-    start_script = repo_root / "app-setup" / "start.sh"
-    start_env = os.environ.copy()
-    start_env["WORKSPACE_HOST"] = str(repo_root)
-    start_env["GATEWAY_MODULE"] = gateway_module
-    start_env["IMAGE_NAME"] = "secure-mcp-gateway"
-    start_env["TAG"] = "latest"
-
     print(f"[INFO] Starting gateway in Docker (target={target})...", flush=True)
     subprocess.run(
-        ["bash", str(start_script), target],
+        [sys.executable, str(start_script), target, str(repo_root)],
         cwd=str(repo_root),
-        env=start_env,
         check=True,
         timeout=120,
     )
@@ -382,14 +373,11 @@ def cmd_score(args) -> int:
         output = proc.stdout + proc.stderr
         results = parse_pytest_results(output)
     finally:
-        # 3) reset.sh - stop container and clear state
-        reset_script = repo_root / "app-setup" / "reset.sh"
-        reset_env = os.environ.copy()
-        reset_env["WORKSPACE_HOST"] = str(repo_root)
+        # 3) reset.py - stop container and clear state
+        reset_script = repo_root / "app-setup" / "reset.py"
         subprocess.run(
-            ["bash", str(reset_script)],
+            [sys.executable, str(reset_script)],
             cwd=str(repo_root),
-            env=reset_env,
         )
 
     elapsed = time.time() - started_at

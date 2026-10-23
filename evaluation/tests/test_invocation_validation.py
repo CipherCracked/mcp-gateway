@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.conftest import (
+from evaluation.tests.conftest import (
     API_KEY_ADMIN, API_KEY_A, API_KEY_B,
     wait_for_state,
 )
