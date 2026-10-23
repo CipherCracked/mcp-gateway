@@ -47,6 +47,56 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def get_reproducibility_metadata() -> dict:
+    """Collect metadata for reproducible evaluation runs."""
+    import openhands.sdk as _oh_sdk  # noqa: F401
+    metadata = {}
+
+    # Git commit SHA
+    try:
+        git_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(APP),
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        metadata["git_commit_sha"] = git_sha
+    except Exception:
+        metadata["git_commit_sha"] = "unknown"
+
+    # Docker image digest
+    try:
+        digest_out = subprocess.run(
+            ["docker", "image", "inspect", SANDBOX_IMAGE, "--format={{.Id}}"],
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        metadata["docker_image_digest"] = digest_out
+    except Exception:
+        metadata["docker_image_digest"] = "unknown"
+
+    # SDK version / short SHA
+    try:
+        # Try to get SDK version from installed package
+        import openhands.sdk
+        metadata["openhands_sdk_version"] = getattr(openhands.sdk, "__version__", "unknown")
+    except Exception:
+        metadata["openhands_sdk_version"] = "unknown"
+
+    # Model version (from env)
+    metadata["model"] = os.environ.get("LLM_MODEL", os.environ.get("OH_MODEL", "unknown"))
+
+    return metadata
+
+
+def print_reproducibility_metadata(metadata: dict) -> None:
+    """Print reproducibility metadata in a consistent format."""
+    print("\n" + "=" * 60, flush=True)
+    print("REPRODUCIBILITY METADATA", flush=True)
+    print("=" * 60, flush=True)
+    for key, value in metadata.items():
+        print(f"  {key}: {value}", flush=True)
+    print("=" * 60, flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Subprocess streaming helpers
 # ---------------------------------------------------------------------------
@@ -363,6 +413,10 @@ def cmd_score(args) -> int:
     env["GATEWAY_MODULE"] = gateway_module
 
     # Run the full verifier suite once, then map results to checks.
+    # Print reproducibility metadata
+    repo_meta = get_reproducibility_metadata()
+    print_reproducibility_metadata(repo_meta)
+
     print(f"[INFO] Scoring target: {target}", flush=True)
     print(f"[INFO] Gateway module: {gateway_module}", flush=True)
     print(f"[INFO] Started at: {datetime.now(timezone.utc).isoformat()}", flush=True)
@@ -436,6 +490,7 @@ def cmd_score(args) -> int:
             "frontier_ceiling": float(scoring_cfg["scoring"].get("frontier_model_ceiling", 0.3)),
             "passed": final_score < float(scoring_cfg["scoring"].get("frontier_model_ceiling", 0.3)),
             "checks": check_details,
+            "reproducibility": repo_meta,
         }
 
         proof_file.write_text(json.dumps(proof_data, indent=2), encoding="utf-8")
@@ -527,6 +582,10 @@ def cmd_check_mutants() -> int:
     from datetime import datetime, timezone
     import json
 
+    # Print reproducibility metadata
+    mut_meta = get_reproducibility_metadata()
+    print_reproducibility_metadata(mut_meta)
+
     if not MUTANTS_SCRIPT.exists():
         print(f"[FAIL] Mutant test script not found: {MUTANTS_SCRIPT}", file=sys.stderr)
         return 1
@@ -575,6 +634,7 @@ def cmd_check_mutants() -> int:
         "stdout": proc.stdout,
         "stderr": proc.stderr,
         "pass": detection_rate >= 1.0,
+        "reproducibility": get_reproducibility_metadata(),
     }
 
     proof_file = proof_dir / f"mutants_{timestamp}.json"
@@ -871,6 +931,10 @@ def cmd_generate(args) -> int:
         print(f"Workspace: {workspace}")
         print(f"Sandbox container: {SANDBOX_CONTAINER}")
         print(f"Log file: {log_file}")
+
+        # Print reproducibility metadata
+        gen_meta = get_reproducibility_metadata()
+        print_reproducibility_metadata(gen_meta)
 
         with open(log_file, "w", encoding="utf-8") as lf:
             lf.write(

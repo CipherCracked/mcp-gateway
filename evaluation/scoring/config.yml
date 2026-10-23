@@ -9,6 +9,9 @@ agent:
   # Lower this to cap cost on paid models; raise for harder tasks.
   max_iteration_per_run: 200
 
+  # Temperature for the main agent LLM. 0.0 = deterministic (default).
+  temperature: 0.0
+
   # Enable stuck-detection (conversation auto-abort on repeated no-progress).
   stuck_detection: true
 

@@ -453,6 +453,7 @@ def main() -> None:
         model=model,
         api_key=api_key,
         base_url=base_url,
+        temperature=agent_cfg.get("temperature", 0.0),
         reasoning_effort=agent_cfg.get("reasoning_effort", "medium"),
         caching_prompt=agent_cfg.get("caching_prompt", True),
     )
@@ -462,6 +463,7 @@ def main() -> None:
         model=model,
         api_key=api_key,
         base_url=base_url,
+        temperature=agent_cfg.get("temperature", 0.0),
         usage_id="condenser",
         reasoning_effort=condenser_cfg.get("reasoning_effort", "low"),
         caching_prompt=agent_cfg.get("caching_prompt", True),
