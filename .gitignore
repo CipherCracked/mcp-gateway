@@ -1,6 +1,9 @@
 # Firecrawl
 .firecrawl/
 
+# Temporary staging directory (recreated by build.py on each score run)
+workspace/mcp_gateway/
+
 # Documentation (generated, not committed)
 docs/
 
